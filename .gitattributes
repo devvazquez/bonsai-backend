@@ -1,0 +1,10 @@
+# Guarda y extrae todo con finales de línea LF: si run-local.sh o el Dockerfile
+# llegan a Linux con CRLF, bash falla con errores raros de "\r: command not found".
+* text=auto eol=lf
+
+# Los scripts de PowerShell sí van con CRLF (es lo normal en Windows).
+*.ps1 text eol=crlf
+
+*.png binary
+*.mp3 binary
+*.db binary

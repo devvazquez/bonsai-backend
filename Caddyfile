@@ -1,0 +1,18 @@
+{$BONSAI_DOMAIN} {
+	reverse_proxy bonsai:8080
+
+	# Comprime las respuestas (el JSON con el audio en base64 es grande).
+	encode gzip
+
+	# La descripción + el audio pueden tardar unos segundos.
+	request_body {
+		max_size 12MB
+	}
+
+	log {
+		output file /data/access.log {
+			roll_size 10MB
+			roll_keep 5
+		}
+	}
+}

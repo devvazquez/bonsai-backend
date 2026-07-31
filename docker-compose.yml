@@ -1,0 +1,53 @@
+services:
+  bonsai:
+    build: .
+    container_name: bonsai-backend
+    restart: unless-stopped
+    expose:
+      - "8080"
+    ports:
+      # Accesible solo desde la propia máquina. Si usas el perfil "caddy",
+      # puedes comentar esta línea: Caddy se encarga de exponerlo.
+      - "127.0.0.1:8080:8080"
+    environment:
+      - GROQ_API_KEY=${GROQ_API_KEY:?Define GROQ_API_KEY en el fichero .env}
+      - BONSAI_API_TOKEN=${BONSAI_API_TOKEN:-}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-*}
+      # - GROQ_VISION_MODEL=qwen/qwen3.6-27b
+    volumes:
+      # Aquí vive la base de datos de los recuerdos, para que sobrevivan a
+      # reinicios y actualizaciones del contenedor.
+      - bonsai-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # Proxy inverso con HTTPS automático (Let's Encrypt).
+  # Solo se arranca si lo pides:  docker compose --profile caddy up -d
+  # Si tu primo ya tiene Nginx/Traefik en el servidor, NO uses este perfil:
+  # habría conflicto por los puertos 80 y 443.
+  caddy:
+    image: caddy:2-alpine
+    container_name: bonsai-caddy
+    restart: unless-stopped
+    profiles: ["caddy"]
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - BONSAI_DOMAIN=${BONSAI_DOMAIN:?Define BONSAI_DOMAIN en el fichero .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - bonsai
+
+volumes:
+  bonsai-data:
+  caddy-data:
+  caddy-config:
