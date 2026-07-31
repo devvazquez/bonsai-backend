@@ -15,7 +15,7 @@ from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 import memory
@@ -120,6 +120,21 @@ def build_system_prompt(lang: str, memory_context: str) -> str:
 # --------------------------------------------------------------------------
 # Endpoints
 # --------------------------------------------------------------------------
+@app.get("/probar", response_class=HTMLResponse)
+def probar() -> HTMLResponse:
+    """Página de prueba para el móvil. Sin token: es solo HTML.
+
+    Se sirve desde el propio backend para que no haya CORS ni haya que montar
+    nada aparte: se abre la IP del servidor en el móvil y ya está.
+    """
+    pagina = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "probar.html")
+    try:
+        with open(pagina, encoding="utf-8") as f:
+            return HTMLResponse(f.read())
+    except FileNotFoundError:
+        raise HTTPException(404, "Falta static/probar.html en el servidor.") from None
+
+
 @app.get("/health")
 def health() -> dict[str, Any]:
     """Sin token: lo usa el healthcheck de Docker."""

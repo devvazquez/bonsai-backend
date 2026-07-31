@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1a1a1a">
+<title>Bonsai — probar desde el móvil</title>
+<style>
+  :root { color-scheme: dark light; --fg:#e8e8e8; --bg:#151515; --card:#222; --line:#333; --ac:#7dd3a0; }
+  @media (prefers-color-scheme: light) {
+    :root { --fg:#1a1a1a; --bg:#f4f4f2; --card:#fff; --line:#ddd; --ac:#0f7a44; }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin:0; padding:16px; font:16px/1.5 system-ui,-apple-system,sans-serif;
+    background:var(--bg); color:var(--fg);
+    padding-bottom: calc(16px + env(safe-area-inset-bottom));
+  }
+  h1 { font-size:1.15rem; margin:0 0 4px; }
+  .sub { opacity:.6; font-size:.85rem; margin:0 0 16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px; margin-bottom:12px; }
+  label { display:block; font-size:.78rem; text-transform:uppercase; letter-spacing:.04em; opacity:.65; margin-bottom:4px; }
+  select, input[type=text] {
+    width:100%; padding:11px; font-size:16px; border-radius:8px;
+    border:1px solid var(--line); background:var(--bg); color:var(--fg);
+  }
+  .fila { display:flex; gap:10px; }
+  .fila > div { flex:1; min-width:0; }
+  /* Botón grande: se usa con una mano, andando por la calle. */
+  button {
+    width:100%; padding:18px; font-size:1.05rem; font-weight:600;
+    border:0; border-radius:12px; background:var(--ac); color:#04140b;
+    cursor:pointer; -webkit-tap-highlight-color:transparent;
+  }
+  button:disabled { opacity:.5; }
+  input[type=file] { display:none; }
+  .check { display:flex; align-items:center; gap:8px; margin-top:12px; font-size:.9rem; }
+  .check input { width:20px; height:20px; accent-color:var(--ac); }
+  #salida:empty { display:none; }
+  .texto { font-size:1.2rem; line-height:1.45; margin:0 0 12px; }
+  audio, img { width:100%; border-radius:8px; }
+  img { margin-bottom:12px; }
+  table { width:100%; border-collapse:collapse; font-size:.85rem; }
+  td { padding:5px 0; border-bottom:1px solid var(--line); }
+  td:last-child { text-align:right; font-variant-numeric:tabular-nums; opacity:.8; }
+  .err { color:#ff8a80; white-space:pre-wrap; font-size:.9rem; }
+  .nota { font-size:.78rem; opacity:.55; margin-top:10px; }
+</style>
+</head>
+<body>
+
+<h1>Bonsai</h1>
+<p class="sub">Haz una foto y escucha qué tienes delante.</p>
+
+<div class="card">
+  <div class="fila">
+    <div>
+      <label for="prov">Proveedor</label>
+      <select id="prov">
+        <option value="">Por defecto</option>
+        <option value="gemini">Gemini</option>
+        <option value="groq">Groq</option>
+      </select>
+    </div>
+    <div>
+      <label for="lang">Idioma</label>
+      <select id="lang">
+        <option value="ca">Català</option>
+        <option value="es">Castellano</option>
+        <option value="en">English</option>
+      </select>
+    </div>
+  </div>
+  <div class="check">
+    <input type="checkbox" id="audio" checked>
+    <label for="audio" style="margin:0;text-transform:none;letter-spacing:0;font-size:.9rem;opacity:1">Generar voz</label>
+  </div>
+  <div class="check">
+    <input type="checkbox" id="reducir" checked>
+    <label for="reducir" style="margin:0;text-transform:none;letter-spacing:0;font-size:.9rem;opacity:1">Reducir a 896 px antes de subir</label>
+  </div>
+</div>
+
+<div class="card">
+  <label for="prompt">Pregunta (opcional)</label>
+  <input type="text" id="prompt" placeholder="¿Qué dice el cartel?" enterkeyhint="done">
+  <div style="height:10px"></div>
+  <label for="token">Token, si el servidor lo pide</label>
+  <input type="text" id="token" placeholder="X-API-Token" autocomplete="off" spellcheck="false">
+</div>
+
+<button id="btn">Hacer una foto</button>
+<!-- capture=environment abre la cámara trasera. Funciona sin HTTPS, que es lo
+     que permite probar por IP local sin montar certificados. -->
+<input type="file" id="file" accept="image/*" capture="environment">
+
+<div id="salida"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const salida = $("salida");
+// La página la sirve el propio backend, así que la API está en el mismo origen.
+const API = location.origin;
+
+$("btn").onclick = () => $("file").click();
+
+// Recuerda los ajustes entre fotos: probar desde el móvil es repetir mucho.
+for (const id of ["prov", "lang", "token", "audio", "reducir"]) {
+  const el = $(id), guardado = localStorage.getItem("bonsai." + id);
+  if (guardado !== null) el[el.type === "checkbox" ? "checked" : "value"] = guardado === "true" ? true : guardado === "false" ? false : guardado;
+  el.onchange = () => localStorage.setItem("bonsai." + id, el.type === "checkbox" ? el.checked : el.value);
+}
+
+/* Reduce en el móvil antes de subir. Con datos móviles la subida es la parte
+   más lenta de todas: una foto de 12 MP son ~3 MB, y a 896 px son ~60 KB. */
+async function aBase64(file) {
+  if (!$("reducir").checked) {
+    const buf = await file.arrayBuffer();
+    let s = ""; const b = new Uint8Array(buf);
+    for (let i = 0; i < b.length; i += 8192) s += String.fromCharCode(...b.subarray(i, i + 8192));
+    return { b64: btoa(s), bytes: b.length };
+  }
+  const bitmap = await createImageBitmap(file);  // respeta la orientación EXIF
+  const f = Math.min(1, 896 / Math.max(bitmap.width, bitmap.height));
+  const c = document.createElement("canvas");
+  c.width = Math.round(bitmap.width * f);
+  c.height = Math.round(bitmap.height * f);
+  c.getContext("2d").drawImage(bitmap, 0, 0, c.width, c.height);
+  const url = c.toDataURL("image/jpeg", 0.8);
+  const b64 = url.split(",")[1];
+  return { b64, bytes: Math.round(b64.length * 0.75), w: c.width, h: c.height };
+}
+
+$("file").onchange = async e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  e.target.value = "";  // permite repetir con la misma foto
+
+  $("btn").disabled = true;
+  $("btn").textContent = "Procesando…";
+  salida.innerHTML = "";
+
+  const t0 = performance.now();
+  try {
+    const prep = await aBase64(file);
+    const tPrep = performance.now() - t0;
+
+    const cuerpo = {
+      deviceId: "movil",
+      image: prep.b64,
+      lang: $("lang").value,
+      audio: $("audio").checked,
+    };
+    if ($("prov").value) cuerpo.provider = $("prov").value;
+    if ($("prompt").value.trim()) cuerpo.prompt = $("prompt").value.trim();
+
+    const cab = { "Content-Type": "application/json" };
+    if ($("token").value.trim()) cab["X-API-Token"] = $("token").value.trim();
+
+    const tReq = performance.now();
+    const r = await fetch(API + "/describe", {
+      method: "POST", headers: cab, body: JSON.stringify(cuerpo),
+    });
+    const msReq = performance.now() - tReq;
+
+    if (!r.ok) {
+      const cuerpoErr = await r.text();
+      let msg = `HTTP ${r.status}`;
+      if (r.status === 429) {
+        const esperar = r.headers.get("Retry-After");
+        msg += esperar ? ` — cuota agotada, reintenta en ${esperar} s` : " — cuota agotada";
+      }
+      try { msg += "\n" + (JSON.parse(cuerpoErr).detail || cuerpoErr); } catch { msg += "\n" + cuerpoErr; }
+      throw new Error(msg);
+    }
+
+    const d = await r.json();
+    const total = performance.now() - t0;
+
+    const filas = [
+      ["Preparar la imagen", `${tPrep.toFixed(0)} ms`],
+      ["Subida + servidor", `${msReq.toFixed(0)} ms`],
+      ["Visión", `${d.timings?.vision_ms ?? "—"} ms`],
+    ];
+    if (d.timings?.tts_ms) filas.push(["Voz", `${d.timings.tts_ms} ms`]);
+    filas.push(
+      ["Tamaño enviado", `${(prep.bytes / 1024).toFixed(0)} KB${prep.w ? ` (${prep.w}×${prep.h})` : ""}`],
+      ["Modelo", `${d.provider || "?"} · ${d.model || "?"}`],
+      ["TOTAL", `${total.toFixed(0)} ms`],
+    );
+
+    salida.innerHTML = `<div class="card">
+      <p class="texto">${d.text.replace(/[<&]/g, c => ({"<":"&lt;","&":"&amp;"}[c]))}</p>
+      ${d.audio ? `<audio controls autoplay src="data:audio/mp3;base64,${d.audio}"></audio>` : ""}
+    </div>
+    <div class="card"><table>${
+      filas.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join("")
+    }</table></div>`;
+  } catch (err) {
+    salida.innerHTML = `<div class="card"><p class="err">${
+      String(err.message || err).replace(/[<&]/g, c => ({"<":"&lt;","&":"&amp;"}[c]))
+    }</p><p class="nota">Si dice «Failed to fetch», comprueba que el móvil llega al servidor: misma WiFi y la IP correcta.</p></div>`;
+  } finally {
+    $("btn").disabled = false;
+    $("btn").textContent = "Hacer otra foto";
+  }
+};
+</script>
+</body>
+</html>
