@@ -71,6 +71,13 @@
       </select>
     </div>
   </div>
+  <div style="height:10px"></div>
+  <label for="tts">Voz</label>
+  <select id="tts">
+    <option value="">Por defecto</option>
+    <option value="piper">Piper (local, ~205 ms)</option>
+    <option value="edge">edge-tts (Microsoft, ~1,3 s)</option>
+  </select>
   <div class="check">
     <input type="checkbox" id="audio" checked>
     <label for="audio" style="margin:0;text-transform:none;letter-spacing:0;font-size:.9rem;opacity:1">Generar voz</label>
@@ -105,7 +112,7 @@ const API = location.origin;
 $("btn").onclick = () => $("file").click();
 
 // Recuerda los ajustes entre fotos: probar desde el móvil es repetir mucho.
-for (const id of ["prov", "lang", "token", "audio", "reducir"]) {
+for (const id of ["prov", "lang", "tts", "token", "audio", "reducir"]) {
   const el = $(id), guardado = localStorage.getItem("bonsai." + id);
   if (guardado !== null) el[el.type === "checkbox" ? "checked" : "value"] = guardado === "true" ? true : guardado === "false" ? false : guardado;
   el.onchange = () => localStorage.setItem("bonsai." + id, el.type === "checkbox" ? el.checked : el.value);
@@ -152,6 +159,7 @@ $("file").onchange = async e => {
       audio: $("audio").checked,
     };
     if ($("prov").value) cuerpo.provider = $("prov").value;
+    if ($("tts").value) cuerpo.tts = $("tts").value;
     if ($("prompt").value.trim()) cuerpo.prompt = $("prompt").value.trim();
 
     const cab = { "Content-Type": "application/json" };
@@ -182,16 +190,18 @@ $("file").onchange = async e => {
       ["Subida + servidor", `${msReq.toFixed(0)} ms`],
       ["Visión", `${d.timings?.vision_ms ?? "—"} ms`],
     ];
-    if (d.timings?.tts_ms) filas.push(["Voz", `${d.timings.tts_ms} ms`]);
+    if (d.timings?.tts_ms) filas.push([`Voz (${d.tts || "?"})`, `${d.timings.tts_ms} ms`]);
     filas.push(
       ["Tamaño enviado", `${(prep.bytes / 1024).toFixed(0)} KB${prep.w ? ` (${prep.w}×${prep.h})` : ""}`],
       ["Modelo", `${d.provider || "?"} · ${d.model || "?"}`],
       ["TOTAL", `${total.toFixed(0)} ms`],
     );
 
+    // El formato lo dice el servidor: Piper devuelve WAV y edge-tts, MP3.
+    const tipo = d.audioFormat === "wav" ? "audio/wav" : "audio/mpeg";
     salida.innerHTML = `<div class="card">
       <p class="texto">${d.text.replace(/[<&]/g, c => ({"<":"&lt;","&":"&amp;"}[c]))}</p>
-      ${d.audio ? `<audio controls autoplay src="data:audio/mp3;base64,${d.audio}"></audio>` : ""}
+      ${d.audio ? `<audio controls autoplay src="data:${tipo};base64,${d.audio}"></audio>` : ""}
     </div>
     <div class="card"><table>${
       filas.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join("")

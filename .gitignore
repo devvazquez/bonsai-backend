@@ -10,3 +10,7 @@ data/
 
 # Fotos de prueba que se dejan caer en la carpeta al probar "describe"
 images.jpg
+
+# Modelos de Piper: 63 MB cada uno, se bajan solos al arrancar
+voices/
+*.wav

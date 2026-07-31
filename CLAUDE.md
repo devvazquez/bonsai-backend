@@ -102,10 +102,16 @@ frente a las mismas 8 repetidas:
 Son 3,1x. Yo mismo me colé una vez dando 509 ms como "sin caché" cuando esa frase ya se
 había sintetizado cuatro veces antes. Usa frases nuevas y cada una una sola vez.
 
-Alternativa medida: **Piper en local** con las voces catalanas de la UPC. `upc_ona` medium
-205 ms de mediana (182-422), `upc_pau` x_low 122 ms, sin red y sin caché que engañe: 6,4x
-más rápido que edge-tts con texto nuevo. Contrapartida, la voz suena más robótica.
-Pendiente de que Biel escuche las muestras y decida.
+**Ya decidido: se usa Piper con `ca_ES-upc_ona-medium`** (`TTS_PROVIDER=piper`, el de por
+defecto). 205 ms de mediana frente a los 1.320 ms de edge-tts con texto nuevo, y sin caché
+que engañe porque sintetiza de cero cada vez. Una petición completa con foto pasó de
+2.575 ms a 1.170 ms. edge-tts sigue disponible con `TTS_PROVIDER=edge` o `"tts":"edge"`.
+
+Ojo: **Piper devuelve WAV y edge-tts MP3**. El formato va en `audioFormat`, no lo des por
+hecho. El WAV pesa 247 KB frente a 66 KB de la misma frase en MP3, que importa por BLE.
+
+Descartado: el **TTS de Gemini**. Soporta catalán y suena bien, pero 5.354, 7.727 y
+11.320 ms medidos. Inservible aquí.
 
 Ya arreglado: el timeout con `str(e)` vacío (ahora `vision.describe_error`) y el
 `data:image/jpeg` fijo (ahora `vision.sniff_mime`).

@@ -58,6 +58,9 @@ async def _startup() -> None:
     # Abre la conexión TLS con el proveedor por defecto antes de la primera
     # foto: son ~220 ms que, si no, los paga quien lleve las gafas.
     await vision.warmup()
+    # Y baja/carga el modelo de Piper: ~63 MB una vez y ~1,2 s de carga que
+    # tampoco tiene por qué pagar la primera foto.
+    await tts.warmup()
 
 
 @app.on_event("shutdown")
@@ -77,6 +80,8 @@ class DescribeRequest(BaseModel):
     audio: bool = True        # a False, solo devuelve el texto (más rápido)
     # 'gemini' o 'groq'. Si no se dice nada, el de VISION_PROVIDER (gemini).
     provider: str | None = None
+    # 'piper' o 'edge'. Si no se dice nada, el de TTS_PROVIDER (piper).
+    tts: str | None = None
 
 
 class MemoryRequest(BaseModel):
@@ -149,6 +154,14 @@ def health() -> dict[str, Any]:
             }
             for p in vision.PROVIDERS
         },
+        "tts": {
+            # "configured" es lo que se pidió y "active" lo que se usará: si
+            # Piper falló y se está tirando de edge-tts, aquí se ve.
+            "configured": tts.DEFAULT_PROVIDER,
+            "active": tts.effective_provider(),
+            "format": tts.format_for(),
+            "piper": tts.piper_status(),
+        },
     }
 
 
@@ -211,10 +224,15 @@ async def describe(req: DescribeRequest) -> dict[str, Any]:
 
     # 3. Voz (opcional)
     if req.audio:
-        t0 = time.perf_counter()
-        voice = tts.voice_for(lang, req.voice)
         try:
-            audio_bytes = await tts.synthesize(description, voice)
+            tts_provider = tts.effective_provider(req.tts)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+
+        t0 = time.perf_counter()
+        voice = tts.voice_for(lang, req.voice, tts_provider)
+        try:
+            audio_bytes = await tts.synthesize(description, voice, tts_provider)
         except Exception as e:
             raise HTTPException(
                 502, f"Fallo al generar el audio: {describe_error(e)}"
@@ -222,29 +240,45 @@ async def describe(req: DescribeRequest) -> dict[str, Any]:
         timings["tts_ms"] = int((time.perf_counter() - t0) * 1000)
 
         result["audio"] = base64.b64encode(audio_bytes).decode("ascii")
-        result["audioFormat"] = "mp3"
+        # No va fijo a "mp3": Piper devuelve WAV y edge-tts, MP3.
+        result["audioFormat"] = tts.format_for(tts_provider)
         result["voice"] = voice
+        result["tts"] = tts_provider
 
     result["timings"] = timings
     return result
 
 
 @app.post("/speak", dependencies=[Depends(require_token)])
-async def speak(text: str, lang: str = tts.DEFAULT_LANG, voice: str | None = None):
-    """Solo texto a voz. Devuelve el MP3 en crudo (útil para la ESP32).
+async def speak(
+    text: str,
+    lang: str = tts.DEFAULT_LANG,
+    voice: str | None = None,
+    tts_provider: str | None = None,
+):
+    """Solo texto a voz. Devuelve el audio en crudo (útil para la ESP32).
 
-    Va por trozos, así que se puede empezar a reproducir a los ~300 ms en vez
-    de esperar a tener el audio entero.
+    Con Piper llega de una vez (~205 ms, no hay nada que trocear). Con edge-tts
+    va por trozos, así que se puede empezar a reproducir a los ~1,1 s en vez de
+    esperar el MP3 entero.
+
+    El Content-Type dice el formato: audio/wav con Piper, audio/mpeg con
+    edge-tts.
     """
-    trozos = tts.stream(text, tts.voice_for(lang, voice))
+    try:
+        proveedor = tts.effective_provider(tts_provider)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
 
-    # Pedimos el primer trozo antes de empezar a responder: si edge-tts falla,
+    trozos = tts.stream(text, tts.voice_for(lang, voice, proveedor), proveedor)
+
+    # Pedimos el primer trozo antes de empezar a responder: si el TTS falla,
     # aún estamos a tiempo de devolver un error de verdad en vez de un 200 con
     # el cuerpo vacío.
     try:
         primero = await anext(trozos)
     except StopAsyncIteration:
-        raise HTTPException(502, "edge-tts no devolvió audio.") from None
+        raise HTTPException(502, f"{proveedor} no devolvió audio.") from None
     except Exception as e:
         raise HTTPException(
             502, f"Fallo al generar el audio: {describe_error(e)}"
@@ -255,7 +289,7 @@ async def speak(text: str, lang: str = tts.DEFAULT_LANG, voice: str | None = Non
         async for trozo in trozos:
             yield trozo
 
-    return StreamingResponse(cuerpo(), media_type="audio/mpeg")
+    return StreamingResponse(cuerpo(), media_type=tts.media_type_for(proveedor))
 
 
 @app.post("/memory", dependencies=[Depends(require_token)])
@@ -278,6 +312,17 @@ def remove_memory(device_id: str, memory_id: str) -> dict[str, Any]:
 
 
 @app.get("/voices", dependencies=[Depends(require_token)])
-async def voices(prefix: str = "") -> dict[str, Any]:
-    """Lista las voces disponibles, p. ej. /voices?prefix=ca"""
-    return {"voices": await tts.list_available_voices(prefix)}
+async def voices(prefix: str = "", tts_provider: str | None = None) -> dict[str, Any]:
+    """Lista las voces disponibles, p. ej. /voices?prefix=ca
+
+    Con Piper son los modelos que hay en disco; con edge-tts, el catálogo de
+    Microsoft.
+    """
+    try:
+        proveedor = tts.effective_provider(tts_provider)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    return {
+        "tts": proveedor,
+        "voices": await tts.list_available_voices(prefix, proveedor),
+    }

@@ -163,7 +163,8 @@ El repositorio incluye una `image.png` de ejemplo para probar sin buscar fotos.
   "lang": "ca",                        // opcional: ca | es | en
   "voice": "ca-ES-EnricNeural",        // opcional: fuerza una voz concreta
   "audio": true,                       // a false devuelve solo texto (mucho más rápido)
-  "provider": "gemini"                 // opcional: gemini | groq. Por defecto, VISION_PROVIDER
+  "provider": "gemini",                // opcional: gemini | groq. Por defecto, VISION_PROVIDER
+  "tts": "piper"                       // opcional: piper | edge. Por defecto, TTS_PROVIDER
 }
 ```
 
@@ -175,10 +176,11 @@ Respuesta:
   "lang": "ca",
   "provider": "gemini",
   "model": "gemini-3.1-flash-lite",
-  "audio": "<MP3 en base64>",
-  "audioFormat": "mp3",
-  "voice": "ca-ES-JoanaNeural",
-  "timings": { "memoria_ms": 0, "vision_ms": 1146, "tts_ms": 1350 }
+  "audio": "<audio en base64>",
+  "audioFormat": "wav",                // wav con Piper, mp3 con edge-tts: no lo des por hecho
+  "tts": "piper",
+  "voice": "ca_ES-upc_ona-medium",
+  "timings": { "memoria_ms": 0, "vision_ms": 784, "tts_ms": 362 }
 }
 ```
 
@@ -206,6 +208,41 @@ eso cuenta.
 
 `GET /health` dice en todo momento cuál es el proveedor por defecto, qué modelo
 usa cada uno y si su key está configurada.
+
+### Elegir el motor de voz
+
+Igual que con la visión, hay dos y se cambia por petición con el campo `tts`:
+
+| Motor | Voz por defecto (ca) | Latencia medida | Formato | Notas |
+| --- | --- | --- | --- | --- |
+| `piper` (por defecto) | `ca_ES-upc_ona-medium` | **205 ms** (182-422) | WAV | En local, sin red ni cuota |
+| `edge` | `ca-ES-JoanaNeural` | 1.320 ms (949-2.089) | MP3 | Mejor calidad de voz |
+
+En una petición completa con foto, el cambio se nota: **1.170 ms con Piper
+frente a 2.575 ms con edge-tts**, con la misma imagen y el mismo modelo de
+visión.
+
+Dos cosas a tener en cuenta:
+
+- **El formato cambia.** Piper devuelve WAV y edge-tts, MP3. La respuesta lo
+  dice en `audioFormat` y `/speak` en el `Content-Type`; no lo des por hecho.
+  El WAV pesa bastante más (247 KB frente a 66 KB en la misma frase), que
+  importa por BLE y con datos móviles.
+- **La voz de Piper suena más robótica.** Es un modelo VITS, no una voz
+  neuronal de Azure. Si prefieres la calidad a la latencia, `TTS_PROVIDER=edge`.
+
+Los modelos de Piper (63 MB para `upc_ona` medium) **se bajan solos la primera
+vez que arranca el servidor** y quedan en `voices/`. Para tenerlos antes, por
+ejemplo al construir la imagen de Docker:
+
+```sh
+python descargar_voces.py            # la de por defecto (catalán)
+python descargar_voces.py --todas
+```
+
+Si Piper no está disponible (falta el modelo, o la librería), el servidor
+**no se queda mudo**: usa edge-tts y lo dice en `/health`, en
+`tts.active` y `tts.piper.error`. El apaño es visible a propósito.
 
 ### Errores de `/describe`
 
@@ -392,6 +429,8 @@ ahorra tener que decodificar base64 en el microcontrolador.
 | `GEMINI_THINKING_LEVEL` | `minimal` | Razonamiento de Gemini. Subirlo trunca la respuesta: gasta los 150 tokens pensando |
 | `GEMINI_MEDIA_RESOLUTION` | (el de la API) | `LOW`, `MEDIUM` o `HIGH`. Es lo que decide el coste de la imagen en Gemini, no su tamaño |
 | `GROQ_VISION_MODEL` | `qwen/qwen3.6-27b` | Modelo de visión, por si Groq lo renombra |
+| `TTS_PROVIDER` | `piper` | Motor de voz por defecto: `piper` (local, rápido) o `edge` (Microsoft, mejor voz) |
+| `PIPER_VOICES_DIR` | `./voices` | Dónde viven los modelos `.onnx` de Piper |
 | `BONSAI_DB_PATH` | `/data/bonsai.db` o `./data/bonsai.db` | Ruta de la base de datos de recuerdos |
 | `BONSAI_DOMAIN` | — | Dominio para el HTTPS automático (solo con el perfil `caddy`) |
 | `PORT` | `8080` | Puerto dentro del contenedor |
@@ -408,10 +447,13 @@ ahorra tener que decodificar base64 en el microcontrolador.
 | `vision.py` | Lo común a los proveedores: cliente HTTP, cuota agotada, formato de imagen |
 | `gemini_vision.py` | Cliente de Gemini (el proveedor por defecto) |
 | `groq_vision.py` | Cliente de Groq |
-| `tts.py` | Texto a voz con edge-tts y selección de voz por idioma |
+| `tts.py` | Capa común de voz: elige motor, voz por idioma y formato |
+| `piper_tts.py` | Voz en local con Piper (el motor por defecto) |
 | `memory.py` | Recuerdos por dispositivo en SQLite |
+| `static/probar.html` | Página de prueba para el móvil, en `/probar` |
 | `test_bonsai.py` | Terminal de pruebas, sin dependencias |
 | `bench_latency.py` | Banco de pruebas de latencia, con tope de cuota |
+| `descargar_voces.py` | Baja los modelos de Piper a `voices/` |
 | `Dockerfile`, `docker-compose.yml`, `Caddyfile` | Despliegue |
 | `run-local.ps1`, `run-local.sh` | Desarrollo en local sin Docker |
 
@@ -483,7 +525,21 @@ predecible: sin red, sin cola larga y sin depender de un servicio ajeno. El
 modelo tarda ~1,2 s en cargarse una sola vez al arrancar.
 
 La contrapartida es la calidad de voz: son modelos VITS y suenan más robóticos
-que las voces neuronales de Azure. Es una decisión de producto, no técnica.
+que las voces neuronales de Azure. **Ya está decidido: se usa `upc_ona`
+medium**, y `TTS_PROVIDER=edge` sigue disponible para quien prefiera la voz de
+Microsoft.
+
+#### Descartado: el TTS de Gemini
+
+Soporta catalán, pero medido con la misma frase es **inservible para esto**:
+
+| Modelo | Latencia |
+| --- | --- |
+| `gemini-2.5-flash-preview-tts` | 5.354 ms y 7.727 ms |
+| `gemini-3.1-flash-tts-preview` | 11.320 ms |
+
+Entre 4 y 55 veces más lento que Piper, y encima gastando de la misma cuota que
+la visión. La calidad de voz es buena, pero no a ese precio en latencia.
 
 **El streaming de visión no compensa.** Medido con `--mode ttft`: el primer
 token de Gemini llega a los 1.246 ms y la respuesta completa a los 1.303 ms, es
