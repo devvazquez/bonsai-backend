@@ -7,6 +7,8 @@ un entorno Python normal sí.
 
 from __future__ import annotations
 
+from typing import AsyncIterator
+
 import edge_tts
 
 # Voz por defecto para cada idioma soportado.
@@ -26,16 +28,21 @@ def voice_for(lang: str | None, voice: str | None = None) -> str:
     return VOICES.get((lang or DEFAULT_LANG).lower(), VOICES[DEFAULT_LANG])
 
 
-async def synthesize(text: str, voice: str) -> bytes:
-    """Genera el MP3 y lo devuelve en memoria (sin tocar disco)."""
-    communicate = edge_tts.Communicate(text, voice)
-    chunks: list[bytes] = []
+async def stream(text: str, voice: str) -> AsyncIterator[bytes]:
+    """Va entregando el MP3 a trozos, en cuanto Microsoft los manda.
 
+    Así quien lo consume puede empezar a reproducir sin esperar a que esté
+    generado el audio entero, que es donde se va la mayor parte del tiempo.
+    """
+    communicate = edge_tts.Communicate(text, voice)
     async for chunk in communicate.stream():
         if chunk["type"] == "audio":
-            chunks.append(chunk["data"])
+            yield chunk["data"]
 
-    audio = b"".join(chunks)
+
+async def synthesize(text: str, voice: str) -> bytes:
+    """Genera el MP3 completo y lo devuelve en memoria (sin tocar disco)."""
+    audio = b"".join([chunk async for chunk in stream(text, voice)])
     if not audio:
         raise RuntimeError("edge-tts no devolvió audio.")
     return audio

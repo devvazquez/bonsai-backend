@@ -15,9 +15,10 @@ from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+import groq_vision
 import memory
 import tts
 from groq_vision import describe_image
@@ -58,6 +59,11 @@ def _startup() -> None:
     memory.init_db()
 
 
+@app.on_event("shutdown")
+async def _shutdown() -> None:
+    await groq_vision.aclose()
+
+
 # --------------------------------------------------------------------------
 # Modelos de petición
 # --------------------------------------------------------------------------
@@ -86,12 +92,18 @@ def build_system_prompt(lang: str, memory_context: str) -> str:
     lang_name = LANG_NAMES.get(lang, "catalán")
 
     parts = [
-        "Eres el asistente de visión de las gafas Bonsai, pensadas para ayudar "
-        "a personas con discapacidad visual a entender su entorno.",
+        "Eres el asistente de visión de las gafas Bonsai: le cuentas a quien "
+        "las lleva lo que tiene delante, sea para orientarse, para leer algo, "
+        "para identificar un objeto o simplemente por curiosidad.",
         f"Hoy es {today}.",
-        "Describe las imágenes de forma clara, breve y natural, priorizando lo "
-        "que sea relevante o útil para la persona (obstáculos, texto visible, "
-        "personas, etc.). Ve al grano: 2-3 frases salvo que se te pida más. "
+        # La respuesta se convierte en voz: cada frase de más son segundos de
+        # espera. De ahí la insistencia en la brevedad.
+        "Contesta en 1 o 2 frases cortas, como si se lo dijeras a alguien de "
+        "viva voz: lo importante primero y nada de relleno. No empieces con "
+        "«en la imagen se ve» ni parecidos, ni describas el fondo o detalles "
+        "irrelevantes. Si hay texto legible o algo que suponga un peligro, eso "
+        "es lo prioritario. Si te hacen una pregunta concreta, responde solo a "
+        "esa pregunta. "
         f"Responde SIEMPRE en {lang_name}.",
     ]
     if memory_context:
@@ -135,7 +147,7 @@ async def describe(req: DescribeRequest) -> dict[str, Any]:
             api_key=GROQ_API_KEY,
             image_base64=req.image,
             system_prompt=build_system_prompt(lang, memory_context),
-            user_prompt=req.prompt or "Describe lo que ves de forma breve y útil.",
+            user_prompt=req.prompt or "¿Qué tengo delante? Dímelo en una o dos frases.",
         )
     except Exception as e:
         raise HTTPException(502, f"Fallo al describir la imagen: {e}") from e
@@ -166,9 +178,29 @@ async def describe(req: DescribeRequest) -> dict[str, Any]:
 
 @app.post("/speak", dependencies=[Depends(require_token)])
 async def speak(text: str, lang: str = tts.DEFAULT_LANG, voice: str | None = None):
-    """Solo texto a voz. Devuelve el MP3 en crudo (útil para la ESP32)."""
-    audio_bytes = await tts.synthesize(text, tts.voice_for(lang, voice))
-    return Response(content=audio_bytes, media_type="audio/mpeg")
+    """Solo texto a voz. Devuelve el MP3 en crudo (útil para la ESP32).
+
+    Va por trozos, así que se puede empezar a reproducir a los ~300 ms en vez
+    de esperar a tener el audio entero.
+    """
+    trozos = tts.stream(text, tts.voice_for(lang, voice))
+
+    # Pedimos el primer trozo antes de empezar a responder: si edge-tts falla,
+    # aún estamos a tiempo de devolver un error de verdad en vez de un 200 con
+    # el cuerpo vacío.
+    try:
+        primero = await anext(trozos)
+    except StopAsyncIteration:
+        raise HTTPException(502, "edge-tts no devolvió audio.") from None
+    except Exception as e:
+        raise HTTPException(502, f"Fallo al generar el audio: {e}") from e
+
+    async def cuerpo():
+        yield primero
+        async for trozo in trozos:
+            yield trozo
+
+    return StreamingResponse(cuerpo(), media_type="audio/mpeg")
 
 
 @app.post("/memory", dependencies=[Depends(require_token)])

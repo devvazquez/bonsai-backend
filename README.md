@@ -1,7 +1,9 @@
 # Bonsai Backend
 
-Backend de **Bonsai**, unas gafas inteligentes que describen en voz alta lo que
-tienen delante, pensadas para ayudar a personas con discapacidad visual.
+Backend de **Bonsai**, unas gafas inteligentes que cuentan en voz alta lo que
+tienes delante: para orientarte, para leer un cartel o un menú, para saber qué
+es un objeto o simplemente por curiosidad. Sirven igual a quien no ve bien que
+a cualquiera que quiera preguntarle algo a lo que está mirando.
 
 Este servidor concentra toda la inteligencia del sistema (visión, voz y
 memoria) para que la ESP32 y la app web solo tengan que llamar a un endpoint
@@ -22,6 +24,10 @@ flowchart LR
 
 En cada petición el servidor añade al prompt la fecha de hoy y los recuerdos
 guardados de ese dispositivo, para que las descripciones tengan contexto.
+
+Las respuestas son **de 1 o 2 frases** a propósito: todo lo que dice el modelo
+hay que escucharlo después, así que cada frase de más son segundos de espera.
+Si necesitas más detalle, se pide con el campo `prompt`.
 
 - **Visión**: Groq con un modelo Qwen VL (~1-2 s).
 - **Voz**: edge-tts, las voces neuronales de Microsoft, gratuitas y con
@@ -164,12 +170,12 @@ Respuesta:
 
 ```jsonc
 {
-  "text": "Estàs en una plaça urbana ampla amb paviment de pedra...",
+  "text": "Estàs en una plaça empedrada amb edificis antics i llums de carrer enceses. Hi ha gent passejant i terrasses de cafès al fons.",
   "lang": "ca",
   "audio": "<MP3 en base64>",
   "audioFormat": "mp3",
   "voice": "ca-ES-JoanaNeural",
-  "timings": { "memoria_ms": 0, "vision_ms": 1095, "tts_ms": 1420 }
+  "timings": { "memoria_ms": 0, "vision_ms": 1146, "tts_ms": 1350 }
 }
 ```
 
@@ -379,12 +385,54 @@ cabeceras propias sobre un socket TCP real: algo que Workers no permite.
 
 De ahí que ahora sea un contenedor Python en una VPS.
 
-### Latencia
+### Latencia: dónde se va el tiempo
 
-El hosting influye poco (20-40 ms). El tiempo se va en Groq (~1-2 s) y en
-edge-tts (~1-2 s; la primera llamada tras arrancar es más lenta porque abre la
-conexión). Si solo hace falta el texto, `"audio": false` se ahorra el TTS
-entero. Cada respuesta trae su `timings` para poder medirlo en vez de suponerlo.
+Todo lo de abajo está medido, no estimado. Cada respuesta trae su `timings`
+para poder repetir las mediciones.
+
+| Etapa | Tiempo | Comentario |
+| --- | --- | --- |
+| Subir la imagen + red hasta Groq | ~0,7 s | Depende de tu conexión de subida |
+| Cómputo de Groq | **0,17 s** | Constante. Es la parte rápida |
+| edge-tts, texto nuevo | 1,5-2,0 s hasta el primer trozo de audio | Escala con la longitud del texto |
+| Escuchar el audio | ~10 s | 1-2 frases. Es el tramo más largo de todos |
+
+Cosas comprobadas que **no** ayudan, para no perder el tiempo con ellas:
+
+- **Comprimir o reducir la imagen no baja el coste.** Groq cobra la imagen a
+  tanto alzado: medido, 1.812 `prompt_tokens` tanto con 1600x1065 (191 KB) como
+  con 336x224 (18 KB), y su cómputo sigue siendo 0,17 s. Reducirla solo sirve
+  para que la app tarde menos en subirla (eso sí importa con datos móviles) y
+  para acortar el envío por BLE desde la ESP32.
+- **Cambiar de modelo de visión no es una opción**: en Groq solo hay uno
+  (`qwen/qwen3.6-27b`); el resto de su catálogo es texto, transcripción o TTS.
+- **Partir el texto en frases y sintetizarlas en paralelo sale peor**: cada
+  frase abre su propio WebSocket con Microsoft (~1,5 s), y compitiendo entre
+  ellas el primer audio llegaba a los 2,4-5,6 s en vez de 1,5-2,0 s.
+
+Cosas que sí ayudan y ya están hechas:
+
+- **Nada de razonamiento paso a paso.** `reasoning_effort: "none"` en
+  `groq_vision.py` no es decorativo: sin él el modelo escribe un bloque
+  `<think>` que se come los 150 tokens y devuelve la respuesta truncada
+  (medido: 2,28 s y respuesta inservible, contra 1,26 s y respuesta correcta).
+- **Una sola conexión con Groq** para todo el proceso, en vez de abrir una por
+  foto: el handshake TLS son ~220 ms medidos que ahora se pagan una vez.
+- **Respuestas de 1 o 2 frases** (prompt + `max_completion_tokens: 150`):
+  acorta las dos etapas que escalan con la longitud. Medido con la misma foto,
+  pasar de 49 a 23 palabras baja la locución de ~21 s a ~10 s.
+- **`/speak` va por trozos**, así que se puede empezar a reproducir en cuanto
+  llega el primero en vez de esperar el MP3 entero (~1,3 s menos de espera).
+
+**El camino más rápido** si la app quiere reaccionar cuanto antes: pedir
+`/describe` con `"audio": false` (texto en ~0,9 s, se puede mostrar ya) y a
+continuación `/speak` con ese texto, que va llegando a trozos. Así no se espera
+a tener todo el audio generado antes de empezar a oír algo.
+
+Un detalle que despista al medir: **Microsoft cachea el audio por texto y voz**.
+Repetir la misma frase da ~0,5 s, mientras que una frase nueva cuesta 1,5-2,0 s.
+En uso real el texto siempre es nuevo, así que hay que fiarse de los tiempos con
+texto nuevo, no de los de un `/speak` repetido en pruebas.
 
 ### Otros apuntes
 
@@ -392,6 +440,12 @@ entero. Cada respuesta trae su `timings` para poder medirlo en vez de suponerlo.
   `/describe` empieza a dar error 502, comprueba el nombre vigente en
   <https://console.groq.com/docs/models> y cámbialo con `GROQ_VISION_MODEL`,
   sin tocar el código.
+- **Límites del plan gratuito de Groq**: cada foto gasta ~1.800 tokens, y el
+  plan da 8.000 tokens por minuto y 200.000 al día. Salen unas **4 fotos por
+  minuto y ~110 al día**. Al pasarse, `/describe` devuelve un 502 con el
+  mensaje de Groq (`Rate limit reached ... try again in N s`). Como el coste por
+  imagen es fijo, mandarla más pequeña no da más margen: si las gafas se van a
+  usar de verdad a diario, hace falta el plan de pago.
 - **edge-tts** usa un protocolo que Microsoft no documenta oficialmente (el
   mismo que la librería de Python homónima, muy usada y mantenida). Funciona
   bien, pero conviene saber que podría romperse si Microsoft lo cambiara.
