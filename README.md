@@ -441,13 +441,49 @@ para poder repetir las mediciones.
 | Subir la imagen + red hasta el proveedor | ~0,7 s | Depende de tu conexión de subida |
 | Visión, Gemini `3.1-flash-lite` | **0,84-1,25 s** | Medido de extremo a extremo, incluida la red |
 | Visión, Groq `qwen3.6-27b` | 1,07 s con la imagen a 896 px | 2,4-3,8 s sin reducirla |
-| edge-tts, texto nuevo | 1,5-4,3 s | Escala con la longitud del texto. **Es el cuello de botella** |
+| edge-tts, texto nuevo | 0,95-2,1 s (mediana 1,32 s) | **Es el cuello de botella.** Ver la trampa de la caché, más abajo |
 | Escuchar el audio | ~10 s | 1-2 frases. Es el tramo más largo de todos |
 
 En una petición completa medida (`/describe` con audio, en catalán): visión
-838 ms, TTS 4.336 ms. El TTS es el **84 %** del tiempo. Cualquier esfuerzo en
-acelerar la visión rinde mucho menos que acortar el texto o empezar a reproducir
-el audio antes.
+838 ms, TTS 4.336 ms. Ese 4,3 s es la cola mala del TTS (primera conexión);
+en régimen la mediana es 1,32 s. Aun así el TTS es la etapa más lenta con
+diferencia: acortar el texto o empezar a reproducir antes rinde mucho más que
+acelerar la visión.
+
+#### La trampa al medir edge-tts: Microsoft cachea por texto y voz
+
+**Cualquier medición que repita la misma frase es falsa**, y es fácil caer sin
+darse cuenta: basta haber sintetizado ese texto en una prueba anterior, porque
+la caché es del servidor de Microsoft y sobrevive entre ejecuciones. Medido con
+8 frases catalanas nuevas, cada una una sola vez, y luego las mismas 8 otra vez:
+
+| | Primer trozo | Audio completo |
+| --- | --- | --- |
+| Texto nuevo (lo que pasa en uso real) | mediana **1.092 ms**, hasta 1.864 | mediana **1.320 ms**, hasta 2.089 |
+| Texto repetido (caché) | mediana 262 ms | mediana 430 ms |
+
+Son **3,1 veces** de diferencia. En las gafas el texto es siempre nuevo, así que
+la columna que cuenta es la primera. Las demos de edge-tts que presumen de
+0,4 s están midiendo la caché.
+
+#### Alternativa evaluada: Piper (local)
+
+[Piper](https://github.com/rhasspy/piper) tiene dos voces catalanas de la UPC
+(`upc_ona`, `upc_pau`) y sintetiza **en local**, sin red. Medido con la misma
+frase, y aquí no hay caché que engañe porque cada síntesis se hace de cero:
+
+| | Mediana | Rango | Notas |
+| --- | --- | --- | --- |
+| `upc_ona` medium, 22 kHz | **205 ms** | 182-422 | Modelo de 63 MB |
+| `upc_pau` x_low, 16 kHz | **122 ms** | 105-219 | Modelo de 28 MB |
+| edge-tts, texto nuevo, 24 kHz | 1.320 ms | 949-2.089 | Depende de Microsoft |
+
+Es **6,4 veces más rápido** que edge-tts con texto nuevo, y sobre todo
+predecible: sin red, sin cola larga y sin depender de un servicio ajeno. El
+modelo tarda ~1,2 s en cargarse una sola vez al arrancar.
+
+La contrapartida es la calidad de voz: son modelos VITS y suenan más robóticos
+que las voces neuronales de Azure. Es una decisión de producto, no técnica.
 
 **El streaming de visión no compensa.** Medido con `--mode ttft`: el primer
 token de Gemini llega a los 1.246 ms y la respuesta completa a los 1.303 ms, es
@@ -572,10 +608,8 @@ El modo `ttft` es el que dice si queda latencia por ganar: si el primer token
 llega mucho antes de que termine la frase, conviene ir mandando el texto al TTS
 a medida que llega en vez de esperar la respuesta completa.
 
-Un detalle que despista al medir: **Microsoft cachea el audio por texto y voz**.
-Repetir la misma frase da ~0,5 s, mientras que una frase nueva cuesta 1,5-2,0 s.
-En uso real el texto siempre es nuevo, así que hay que fiarse de los tiempos con
-texto nuevo, no de los de un `/speak` repetido en pruebas.
+(La trampa de la caché de edge-tts está medida más arriba: 430 ms con texto
+repetido frente a 1.320 ms con texto nuevo.)
 
 ### Otros apuntes
 

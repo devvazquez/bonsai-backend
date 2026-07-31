@@ -88,8 +88,24 @@ Esto es cosa del sandbox, no del proyecto: en la VPS con Docker no aplica.
 
 Descartado ya con datos: **streaming de visión hacia el TTS**. Medido con `--mode ttft`,
 el primer token llega a 1.246 ms y la frase completa a 1.303 ms: 57 ms de diferencia. No
-merece la pena. El cuello de botella es el TTS (4.336 ms de los 5.187 ms de una petición
-completa, el 84 %).
+merece la pena. El cuello de botella es el TTS.
+
+## Al medir edge-tts: Microsoft cachea por texto y voz
+
+**Nunca midas edge-tts con una frase que ya hayas sintetizado antes**, ni en otra
+ejecución: la caché es del servidor de Microsoft y persiste. Medido con 8 frases nuevas
+frente a las mismas 8 repetidas:
+
+- Texto nuevo (uso real): primer trozo mediana 1.092 ms, completo 1.320 ms (cola a 2.089).
+- Texto repetido: primer trozo 262 ms, completo 430 ms.
+
+Son 3,1x. Yo mismo me colé una vez dando 509 ms como "sin caché" cuando esa frase ya se
+había sintetizado cuatro veces antes. Usa frases nuevas y cada una una sola vez.
+
+Alternativa medida: **Piper en local** con las voces catalanas de la UPC. `upc_ona` medium
+205 ms de mediana (182-422), `upc_pau` x_low 122 ms, sin red y sin caché que engañe: 6,4x
+más rápido que edge-tts con texto nuevo. Contrapartida, la voz suena más robótica.
+Pendiente de que Biel escuche las muestras y decida.
 
 Ya arreglado: el timeout con `str(e)` vacío (ahora `vision.describe_error`) y el
 `data:image/jpeg` fijo (ahora `vision.sniff_mime`).
