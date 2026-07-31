@@ -110,6 +110,26 @@ que engañe porque sintetiza de cero cada vez. Una petición completa con foto p
 Ojo: **Piper devuelve WAV y edge-tts MP3**. El formato va en `audioFormat`, no lo des por
 hecho. El WAV pesa 247 KB frente a 66 KB de la misma frase en MP3, que importa por BLE.
 
+## Para la ESP32-S3 se usa `/look`, no `/describe`
+
+`/describe` mete el audio en base64 dentro del JSON: un 33 % más de bytes y algo que
+descodificar en el microcontrolador. `/look` hace lo mismo en una sola petición pero
+devuelve las muestras en crudo y en streaming, que es lo que quiere el I2S del MAX98357A.
+
+Lo importante del streaming: el primer byte de audio sale a los 1.024-1.463 ms (casi todo
+es la visión) y a partir de ahí el audio llega más rápido de lo que se escucha, así que la
+descarga se solapa con la reproducción y **deja de sumar latencia**. Solo hay que ir más
+rápido que el tiempo real:
+
+- `pcm16` 22050 Hz: 44,1 KB/s en tiempo real
+- `pcm16` 16000 Hz: 32,0 KB/s  ← el equilibrio razonable
+- `mulaw` 16000 Hz: 16,0 KB/s
+- `mulaw`  8000 Hz:  8,0 KB/s  ← si el WiFi va justo
+
+No separes `/describe` y `/speak` para ganar tiempo: son dos viajes de ida y vuelta y sale
+peor. Yo lo sugerí una vez y estaba equivocado; lo que se quería (evitar el base64 y sonar
+antes) lo da `/look` en una sola petición.
+
 Descartado: el **TTS de Gemini**. Soporta catalán y suena bien, pero 5.354, 7.727 y
 11.320 ms medidos. Inservible aquí.
 

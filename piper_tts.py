@@ -18,8 +18,9 @@ from __future__ import annotations
 import asyncio
 import io
 import os
+import threading
 import wave
-from typing import AsyncIterator
+from typing import AsyncIterator, Iterator
 
 VOICES_DIR = os.environ.get(
     "PIPER_VOICES_DIR",
@@ -167,6 +168,135 @@ async def stream(text: str, voice: str) -> AsyncIterator[bytes]:
     que tarda edge-tts en entregar el primer trozo.
     """
     yield await synthesize(text, voice)
+
+
+# --------------------------------------------------------------------------
+# Audio en crudo para el ESP32
+# --------------------------------------------------------------------------
+# El MAX98357A es un amplificador I2S: lo que quiere son muestras PCM de 16
+# bits con signo. Cualquier otra cosa (WAV con cabecera, MP3) obliga al
+# microcontrolador a trabajar de más antes de poder sonar.
+FORMATOS = ("pcm16", "mulaw", "wav")
+
+# 22.050 Hz es lo que saca el modelo, así que no hay que remuestrear nada.
+# 16.000 baja el ancho de banda un 27 % y para voz se nota poco. El
+# MAX98357A acepta de 8 a 96 kHz.
+SAMPLE_RATES = (8000, 16000, 22050)
+
+
+def _remuestrear(muestras, origen: int, destino: int):
+    """Remuestreo lineal. De sobra para voz, y son microsegundos con numpy."""
+    import numpy as np
+
+    if origen == destino:
+        return muestras
+    n = int(len(muestras) * destino / origen)
+    if n <= 0:
+        return muestras[:0]
+    x = np.linspace(0, len(muestras) - 1, n)
+    return np.interp(x, np.arange(len(muestras)), muestras).astype(np.int16)
+
+
+def _a_mulaw(muestras):
+    """PCM16 -> mu-law de 8 bits (G.711).
+
+    Se descodifica en el ESP32 con una tabla de 256 entradas, sin librería ni
+    apenas CPU, y ocupa la mitad. Útil si el WiFi va justo.
+    """
+    import numpy as np
+
+    BIAS, CLIP = 0x84, 32635
+    x = np.clip(muestras.astype(np.int32), -CLIP, CLIP)
+    signo = (x < 0).astype(np.uint8) * 0x80
+    x = np.abs(x) + BIAS
+    exponente = np.zeros_like(x, dtype=np.uint8)
+    for e in range(7, 0, -1):
+        exponente = np.where((exponente == 0) & (x >= (1 << (e + 7))), e, exponente)
+    mantisa = ((x >> (exponente.astype(np.int32) + 3)) & 0x0F).astype(np.uint8)
+    return (~(signo | (exponente << 4) | mantisa)).astype(np.uint8).tobytes()
+
+
+def convertir(chunk, formato: str, rate: int | None) -> tuple[bytes, int]:
+    """Pasa un trozo de Piper al formato pedido. Devuelve (bytes, sample_rate)."""
+    import numpy as np
+
+    muestras = np.frombuffer(chunk.audio_int16_bytes, dtype=np.int16)
+    destino = rate or chunk.sample_rate
+    muestras = _remuestrear(muestras, chunk.sample_rate, destino)
+    if formato == "mulaw":
+        return _a_mulaw(muestras), destino
+    return muestras.astype("<i2").tobytes(), destino
+
+
+def cabecera_wav(sample_rate: int, bits: int = 16) -> bytes:
+    """Cabecera WAV de tamaño desconocido, para poder ir enviando sobre la marcha.
+
+    Se pone 0xFFFFFFFF en las longitudes porque al empezar a responder todavía
+    no sabemos cuánto audio habrá. Los reproductores en streaming lo aceptan;
+    el ESP32 ni la necesita.
+    """
+    import struct
+
+    bloque = bits // 8
+    return (
+        b"RIFF" + struct.pack("<I", 0xFFFFFFFF) + b"WAVEfmt "
+        + struct.pack("<IHHIIHH", 16, 1, 1, sample_rate, sample_rate * bloque, bloque, bits)
+        + b"data" + struct.pack("<I", 0xFFFFFFFF)
+    )
+
+
+def _trozos_sincronos(text: str, voice: str) -> Iterator:
+    return _voz_cargada(voice).synthesize(text)
+
+
+async def stream_raw(
+    text: str, voice: str, formato: str = "pcm16", rate: int | None = None
+) -> AsyncIterator[bytes]:
+    """Va soltando el audio a medida que Piper lo genera.
+
+    Piper entrega un trozo por frase, así que con una respuesta de dos frases
+    el ESP32 puede empezar a sonar con la primera mientras se sintetiza la
+    segunda. Y como el audio se transmite más rápido que se escucha, a partir
+    del primer trozo la descarga deja de contar: se solapa con la reproducción.
+
+    Va en un hilo porque Piper es síncrono y bloquearía el bucle de eventos.
+    """
+    if formato not in FORMATOS:
+        raise ValueError(
+            f"Formato de audio desconocido: {formato!r}. Usa uno de: {', '.join(FORMATOS)}"
+        )
+
+    cola: asyncio.Queue = asyncio.Queue()
+    bucle = asyncio.get_running_loop()
+
+    def productor() -> None:
+        try:
+            for chunk in _trozos_sincronos(text, voice):
+                datos, _ = convertir(chunk, formato, rate)
+                bucle.call_soon_threadsafe(cola.put_nowait, datos)
+        except Exception as e:  # se re-lanza en el lado async
+            bucle.call_soon_threadsafe(cola.put_nowait, e)
+        finally:
+            bucle.call_soon_threadsafe(cola.put_nowait, None)
+
+    threading.Thread(target=productor, daemon=True).start()
+
+    while True:
+        item = await cola.get()
+        if item is None:
+            return
+        if isinstance(item, Exception):
+            raise item
+        yield item
+
+
+def sample_rate_de(voice: str, rate: int | None = None) -> int:
+    if rate:
+        return rate
+    with open(voice_path(voice) + ".json", encoding="utf-8") as f:
+        import json
+
+        return int(json.load(f).get("audio", {}).get("sample_rate", 22050))
 
 
 async def warmup(voice: str | None = None) -> bool:

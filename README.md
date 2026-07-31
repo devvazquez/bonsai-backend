@@ -145,7 +145,8 @@ El repositorio incluye una `image.png` de ejemplo para probar sin buscar fotos.
 
 | Método | Ruta | Descripción |
 | --- | --- | --- |
-| `POST` | `/describe` | El endpoint principal: imagen → texto + audio |
+| `POST` | `/describe` | El endpoint principal: imagen → texto + audio (JSON, para navegadores) |
+| `POST` | `/look` | Lo mismo para la ESP32: audio en crudo y en streaming, listo para el I2S |
 | `POST` | `/speak?text=...&lang=ca` | Solo texto a voz. Devuelve el MP3 en crudo |
 | `POST` | `/memory` | `{deviceId, fact}` — guarda un recuerdo |
 | `GET` | `/memory/{deviceId}` | Lista los recuerdos del dispositivo |
@@ -411,8 +412,60 @@ const { text, audio } = await resp.json();
 new Audio("data:audio/mpeg;base64," + audio).play();
 ```
 
-Para la ESP32 suele salir mejor `/speak`, que devuelve el MP3 en crudo y
-ahorra tener que decodificar base64 en el microcontrolador.
+### Para la ESP32-S3: `POST /look`
+
+`/describe` está pensado para navegadores: devuelve JSON con el audio en
+base64, que es un 33 % más de bytes y obliga a decodificar en el
+microcontrolador. Para el ESP32-S3 con un MAX98357A está `/look`, que hace lo
+mismo en **una sola petición** pero devolviendo el audio en crudo y **en
+streaming**.
+
+```jsonc
+POST /look
+{
+  "image": "<base64>", "deviceId": "bonsai-01", "lang": "ca",
+  "audioFormat": "pcm16",   // pcm16 | mulaw | wav. Por defecto pcm16
+  "sampleRate": 16000       // 8000 | 16000 | 22050. Por defecto, el de la voz
+}
+```
+
+El cuerpo son las muestras tal cual: con `pcm16` son enteros de 16 bits con
+signo, little-endian, mono, que es exactamente lo que quiere el I2S del
+MAX98357A. Se escriben con `i2s_write()` sin cabecera, sin códec y sin
+conversión. El texto y los parámetros del audio van en cabeceras, para que el
+firmware no tenga que adivinar cómo configurar el I2S:
+
+```
+X-Bonsai-Text: <el texto, UTF-8 en base64>
+X-Bonsai-Format: pcm16     X-Bonsai-Rate: 16000
+X-Bonsai-Bits: 16          X-Bonsai-Channels: 1
+```
+
+**Por qué el streaming cambia las cuentas.** Medido, el primer byte de audio
+sale a los **1.024-1.463 ms** (casi todo es la visión). A partir de ahí el
+audio llega más rápido de lo que se escucha, así que la descarga **se solapa
+con la reproducción y deja de sumar latencia**: solo tiene que ir más rápido
+que el tiempo real.
+
+| Formato | Tamaño (frase de ~8 s) | Ritmo en tiempo real | Margen a 150 KB/s |
+| --- | --- | --- | --- |
+| `pcm16` 22050 Hz | 370 KB | 44,1 KB/s | 3,4x |
+| `pcm16` 16000 Hz | 237 KB | 32,0 KB/s | 4,7x |
+| `mulaw` 16000 Hz | 131 KB | 16,0 KB/s | 9,4x |
+| `mulaw` 8000 Hz | 65 KB | 8,0 KB/s | 19x |
+
+`pcm16` a 16 kHz es el equilibrio razonable: nada que descodificar y margen de
+sobra. `mulaw` se expande en el ESP32 con una tabla de 256 entradas (una suma
+y un desplazamiento por muestra) y es lo que conviene si el WiFi va justo, a
+costa de calidad. `wav` es solo para navegadores: lleva cabecera con las
+longitudes a 0xFFFFFFFF porque al empezar a responder aún no se sabe cuánto
+audio habrá.
+
+`/look` exige Piper (devuelve un 400 con `"tts": "edge"`): edge-tts da MP3 y
+la idea es justamente no tener que descodificar nada.
+
+Para solo texto a voz sigue estando `/speak`, que también devuelve el audio en
+crudo.
 
 ---
 
