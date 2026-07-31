@@ -389,7 +389,8 @@ ahorra tener que decodificar base64 en el microcontrolador.
 | `BONSAI_API_TOKEN` | vacío | Protege la API. Vacío = sin autenticación |
 | `ALLOWED_ORIGINS` | `*` | Orígenes CORS permitidos, separados por comas |
 | `GEMINI_VISION_MODEL` | `gemini-3.1-flash-lite` | Modelo de Gemini. Más calidad: `gemini-3.5-flash` |
-| `GEMINI_THINKING_LEVEL` | `minimal` | Razonamiento de Gemini. Subirlo añade latencia sin mejorar una descripción de dos frases |
+| `GEMINI_THINKING_LEVEL` | `minimal` | Razonamiento de Gemini. Subirlo trunca la respuesta: gasta los 150 tokens pensando |
+| `GEMINI_MEDIA_RESOLUTION` | (el de la API) | `LOW`, `MEDIUM` o `HIGH`. Es lo que decide el coste de la imagen en Gemini, no su tamaño |
 | `GROQ_VISION_MODEL` | `qwen/qwen3.6-27b` | Modelo de visión, por si Groq lo renombra |
 | `BONSAI_DB_PATH` | `/data/bonsai.db` o `./data/bonsai.db` | Ruta de la base de datos de recuerdos |
 | `BONSAI_DOMAIN` | — | Dominio para el HTTPS automático (solo con el perfil `caddy`) |
@@ -437,30 +438,61 @@ para poder repetir las mediciones.
 
 | Etapa | Tiempo | Comentario |
 | --- | --- | --- |
-| Subir la imagen + red hasta Groq | ~0,7 s | Depende de tu conexión de subida |
-| Cómputo de Groq | **0,17 s** | Constante. Es la parte rápida |
-| edge-tts, texto nuevo | 1,5-2,0 s hasta el primer trozo de audio | Escala con la longitud del texto |
+| Subir la imagen + red hasta el proveedor | ~0,7 s | Depende de tu conexión de subida |
+| Visión, Gemini `3.1-flash-lite` | **0,84-1,25 s** | Medido de extremo a extremo, incluida la red |
+| Visión, Groq `qwen3.6-27b` | 1,07 s con la imagen a 896 px | 2,4-3,8 s sin reducirla |
+| edge-tts, texto nuevo | 1,5-4,3 s | Escala con la longitud del texto. **Es el cuello de botella** |
 | Escuchar el audio | ~10 s | 1-2 frases. Es el tramo más largo de todos |
 
-#### Reducir la imagen sí importa (corrección)
+En una petición completa medida (`/describe` con audio, en catalán): visión
+838 ms, TTS 4.336 ms. El TTS es el **84 %** del tiempo. Cualquier esfuerzo en
+acelerar la visión rinde mucho menos que acortar el texto o empezar a reproducir
+el audio antes.
 
-Aquí decía antes que reducir la imagen no bajaba el coste, con una medición de
-1.812 `prompt_tokens` fijos. **Eso ya no se sostiene**, medido otra vez contra
-`qwen/qwen3.6-27b`:
+**El streaming de visión no compensa.** Medido con `--mode ttft`: el primer
+token de Gemini llega a los 1.246 ms y la respuesta completa a los 1.303 ms, es
+decir **57 ms de diferencia** en 3 trozos. El modelo escribe la frase corta de
+golpe, así que mandarla al TTS a trozos no ahorra nada apreciable. Donde sí se
+gana es en `/speak`, que ya va por trozos.
+
+#### Reducir la imagen: depende del proveedor (corrección)
+
+Aquí decía antes, sin matizar, que reducir la imagen no bajaba el coste.
+Resulta que **cada proveedor cobra de forma distinta**, así que la respuesta no
+es la misma para los dos. Ambas cosas están medidas:
+
+**Groq cobra por píxeles**, así que reducir es la diferencia entre poder probar
+y no poder:
 
 | Imagen | Tamaño | Latencia de visión | Tokens de entrada |
 | --- | --- | --- | --- |
-| 3024x4032 (foto de móvil) | 3,1 MB | 2,4-3,8 s | ~50.000 (estimado) |
-| 672x896 (lado largo 896 px) | 64 KB | **1,07-1,16 s** | **2.656 (dicho por Groq)** |
+| 3024x4032 (foto de móvil) | 3,1 MB | 2,4-3,8 s | ~50.000 |
+| 672x896 (lado largo 896 px) | 64 KB | **1,07-1,16 s** | **2.656** |
 
 Los 2.656 no son estimación: los dijo el propio error 429 de Groq
 (`Requested 2656`). Con la foto sin reducir se agotaron los 200.000 tokens del
-día en unas seis peticiones. Así que reducir a 896 px es **3,5 veces más rápido
-y unas 20 veces más barato**, no solo un ahorro de subida.
+día en unas seis peticiones.
 
-Reducir en el servidor cuesta ~200 ms de CPU con Pillow para una foto de 12 MP,
-que sigue siendo un cambio muy favorable. Está pendiente de hacer: hoy depende
-de que el cliente se acuerde.
+**Gemini cobra plano.** Medido con su endpoint `countTokens`, que es gratis: la
+misma foto cuesta **1.108 tokens tanto a 256x170 como a 2400x1597**. Reducirla
+no ahorra ni un token. Lo que cambia el precio es `mediaResolution`:
+
+| `mediaResolution` | Tokens | Resultado con la foto de prueba |
+| --- | --- | --- |
+| `LOW` | 286 | Confundió la plaza (dijo otra ciudad) |
+| `MEDIUM` | 577 | Misma respuesta que `HIGH` |
+| sin especificar (= `HIGH`) | 1.133 | Correcta |
+
+Se deja el valor por defecto de la API. `MEDIUM` dobla las pruebas que caben en
+la cuota y en esta foto acertó igual, pero es una sola foto: si lo bajas,
+compruébalo con las tuyas. Con `LOW` ya se vio perder precisión, y esto son unas
+gafas para orientarse.
+
+Así que reducir la imagen sigue mereciendo la pena, pero por otras dos razones
+que valen para los dos proveedores: se sube antes (importa con datos móviles y
+por BLE desde la ESP32) y en Groq baja la latencia de visión a un tercio.
+Reducir en el servidor cuesta ~200 ms de CPU con Pillow para una foto de 12 MP.
+Está pendiente de hacer: hoy depende de que el cliente se acuerde.
 
 Cosas comprobadas que **no** ayudan, para no perder el tiempo con ellas:
 
@@ -476,10 +508,22 @@ Cosas comprobadas que **no** ayudan, para no perder el tiempo con ellas:
 
 Cosas que sí ayudan y ya están hechas:
 
-- **Nada de razonamiento paso a paso.** `reasoning_effort: "none"` en
-  `groq_vision.py` no es decorativo: sin él el modelo escribe un bloque
-  `<think>` que se come los 150 tokens y devuelve la respuesta truncada
-  (medido: 2,28 s y respuesta inservible, contra 1,26 s y respuesta correcta).
+- **Nada de razonamiento paso a paso, en los dos proveedores.**
+  `reasoning_effort: "none"` en `groq_vision.py` no es decorativo: sin él el
+  modelo escribe un bloque `<think>` que se come los 150 tokens y devuelve la
+  respuesta truncada (medido: 2,28 s y respuesta inservible, contra 1,26 s y
+  respuesta correcta).
+
+  En Gemini pasa exactamente lo mismo y por eso va
+  `thinkingConfig: {thinkingLevel: "minimal"}`. Medido con `thinkingLevel:
+  "medium"`: gasta ~140 tokens pensando, agota los 150 de `maxOutputTokens` y
+  devuelve `finishReason: MAX_TOKENS` con la frase cortada a media palabra
+  («Tienes delante la Plaça de»). Con `minimal`: 0 tokens de pensamiento,
+  respuesta completa y 838 ms de visión en vez de 1.107-1.226 ms.
+
+  Cuidado con el sitio exacto del campo: `thinkingLevel` suelto en
+  `generationConfig` lo rechaza con un 400 («Unknown name "thinkingLevel"»).
+  Tiene que ir anidado en `thinkingConfig`.
 - **Una sola conexión con el proveedor** para todo el proceso, en vez de abrir
   una por foto: el handshake TLS son ~220 ms medidos que ahora se pagan una vez.
   Además se abre al arrancar (`vision.warmup()`), así que ni siquiera los paga

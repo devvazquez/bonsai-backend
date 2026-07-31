@@ -13,6 +13,21 @@ siendo el más rápido, pero con su cuota no se puede ni desarrollar.
 Antes de medir o probar cualquier cosa, `python bench_latency.py --selftest`:
 comprueba el código sin gastar un solo token.
 
+### Gemini: dos cosas que se aprendieron a base de medir
+
+1. **`thinkingLevel` va anidado en `thinkingConfig`.** Suelto en
+   `generationConfig` la API responde 400. Y no es opcional: con `medium` el
+   modelo gasta ~140 tokens pensando, agota los 150 de `maxOutputTokens` y
+   devuelve la frase cortada (`finishReason: MAX_TOKENS`). Con `minimal`, 838 ms
+   y respuesta completa.
+2. **El tamaño de la imagen no cambia el coste en Gemini.** Medido con
+   `countTokens` (que es gratis): 1.108 tokens tanto a 256x170 como a 2400x1597.
+   El precio lo pone `mediaResolution` (LOW 286 / MEDIUM 577 / HIGH 1.133). Esto
+   es al revés que en Groq, que cobra por píxeles.
+
+Para contar tokens sin gastar cuota de generación:
+`POST /v1beta/models/<modelo>:countTokens`.
+
 ## Cuota de Groq: no la gastes
 
 La cuenta está en el plan gratuito y **el límite es por organización, no por API key**
@@ -68,12 +83,13 @@ Esto es cosa del sandbox, no del proyecto: en la VPS con Docker no aplica.
   896 px), así vale igual para la ESP32 y para la app web y no depende de que el cliente
   se acuerde. Cuesta ~200 ms de CPU y ahorra ~2,6 s de latencia: es la mejora más
   rentable que queda.
-- **Streaming de visión hacia el TTS**: hoy se espera la frase completa antes de empezar
-  a sintetizar. `bench_latency.py --mode ttft` mide cuánto habría que ganar.
-- **Gemini no está probado contra la API de verdad**: falta una `GEMINI_API_KEY`. El
-  código está validado offline (`--selftest`), pero los nombres de modelo, el
-  `thinkingLevel` y la forma del 429 vienen de la documentación, no de una respuesta
-  real.
+- El **429 de Gemini** sigue sin verificarse contra una respuesta real (nunca se agotó la
+  cuota): el parseo del `retryDelay` viene de la documentación.
+
+Descartado ya con datos: **streaming de visión hacia el TTS**. Medido con `--mode ttft`,
+el primer token llega a 1.246 ms y la frase completa a 1.303 ms: 57 ms de diferencia. No
+merece la pena. El cuello de botella es el TTS (4.336 ms de los 5.187 ms de una petición
+completa, el 84 %).
 
 Ya arreglado: el timeout con `str(e)` vacío (ahora `vision.describe_error`) y el
 `data:image/jpeg` fijo (ahora `vision.sniff_mime`).

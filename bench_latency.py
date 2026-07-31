@@ -24,7 +24,6 @@ from __future__ import annotations
 import argparse
 import base64
 import json
-import math
 import os
 import statistics
 import sys
@@ -51,19 +50,25 @@ PRESUPUESTO_POR_DEFECTO = 20_000
 def tokens_estimados(provider: str, ancho: int, alto: int) -> int:
     """Coste aproximado en tokens de entrada de una imagen.
 
-    Gemini cobra por baldosas de 768x768 a 258 tokens (y 258 fijos si cabe en
-    384 px). Los modelos tipo Qwen-VL trocean en parches de 28 px. Ninguna de
-    las dos cuentas es exacta, pero sirve para saber si una prueba cuesta 300
-    tokens o 35.000, que es la diferencia que importa.
+    Los dos proveedores cobran de forma completamente distinta, y las dos
+    cuentas de aquí están calibradas contra medidas reales, no contra la
+    documentación (que en los dos casos no cuadraba).
+
+    Gemini: **plano, no depende del tamaño**. Medido con `countTokens`, la
+    misma foto cuesta 1.108 tokens tanto a 256x170 como a 2400x1597. Lo que
+    manda es `mediaResolution`. Reducir la imagen no ahorra ni un token, solo
+    tiempo de subida.
+
+    Groq: proporcional a los píxeles. Calibrado con lo que dijo su propio
+    error 429, "Requested 2656" para 672x896 (602.112 px).
     """
     if provider == "gemini":
-        if max(ancho, alto) <= 384:
-            return 258
-        baldosas = math.ceil(ancho / 768) * math.ceil(alto / 768)
-        return 258 * max(1, baldosas)
-    # Groq (Qwen-VL): la cuenta por parches de 28 px daba muy corto frente a
-    # lo real, así que va calibrado con lo que dijo el propio error 429 de
-    # Groq: "Requested 2656" para una imagen de 672x896 (602.112 px).
+        res = (os.environ.get("GEMINI_MEDIA_RESOLUTION", "") or "").upper()
+        if "LOW" in res:
+            return 286
+        if "MEDIUM" in res:
+            return 577
+        return 1133  # lo que usa la API si no se dice nada (equivale a HIGH)
     return round(ancho * alto / 227) or 1
 
 
@@ -369,12 +374,18 @@ def selftest() -> int:
 
     print("\nPayload de Gemini:")
     p = gemini_vision._payload(png, "sistema", "usuario", True)
-    check("thinkingLevel", p["generationConfig"]["thinkingLevel"], gemini_vision.THINKING_LEVEL)
+    # Anidado en thinkingConfig: suelto en generationConfig da un 400.
+    check(
+        "thinkingConfig.thinkingLevel",
+        p["generationConfig"]["thinkingConfig"]["thinkingLevel"],
+        gemini_vision.THINKING_LEVEL,
+    )
+    check("nada suelto en generationConfig", "thinkingLevel" in p["generationConfig"], False)
     check("maxOutputTokens", p["generationConfig"]["maxOutputTokens"], 150)
     check("systemInstruction", p["systemInstruction"]["parts"][0]["text"], "sistema")
     check("mimeType", p["contents"][0]["parts"][1]["inlineData"]["mimeType"], "image/png")
     sin = gemini_vision._payload(png, "s", "u", False)
-    check("sin thinkingLevel", "thinkingLevel" in sin["generationConfig"], False)
+    check("sin thinkingConfig", "thinkingConfig" in sin["generationConfig"], False)
 
     print("\nRespuestas raras de Gemini:")
     check(
@@ -403,7 +414,31 @@ def selftest() -> int:
             if not ok:
                 fallos.append(f"{nombre}: el mensaje no menciona {aguja!r}")
 
+    print("\nmediaResolution de Gemini (solo se manda si está configurado):")
+    guardado = os.environ.get("GEMINI_MEDIA_RESOLUTION")
+    try:
+        import importlib
+
+        for valor, esperado in (
+            ("", None),
+            ("LOW", "MEDIA_RESOLUTION_LOW"),
+            ("medium", "MEDIA_RESOLUTION_MEDIUM"),
+            ("MEDIA_RESOLUTION_HIGH", "MEDIA_RESOLUTION_HIGH"),
+        ):
+            os.environ["GEMINI_MEDIA_RESOLUTION"] = valor
+            importlib.reload(gemini_vision)
+            gen = gemini_vision._payload(png, "s", "u", True)["generationConfig"]
+            check(f"{valor or '(vacío)'}", gen.get("mediaResolution"), esperado)
+    finally:
+        if guardado is None:
+            os.environ.pop("GEMINI_MEDIA_RESOLUTION", None)
+        else:
+            os.environ["GEMINI_MEDIA_RESOLUTION"] = guardado
+        importlib.reload(gemini_vision)
+
     print("\nEstimación de tokens por imagen:")
+    print("  Gemini cobra plano (medido con countTokens: 1.108 tokens tanto a")
+    print("  256x170 como a 2400x1597). Groq cobra por píxeles.")
     for prov in ("gemini", "groq"):
         for w, h in ((672, 896), (3024, 4032)):
             print(f"  {prov:7} {w}x{h}: ~{tokens_estimados(prov, w, h):,} tokens")

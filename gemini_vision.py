@@ -28,8 +28,23 @@ BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 MODEL = os.environ.get("GEMINI_VISION_MODEL", "gemini-3.1-flash-lite")
 
 # El equivalente al `reasoning_effort: none` de Groq: para describir una foto
-# el razonamiento paso a paso no aporta nada y son segundos de espera.
+# el razonamiento paso a paso no aporta nada. Y no es cosmético: medido con
+# thinkingLevel "medium", el modelo gasta ~140 tokens pensando, se come los 150
+# de maxOutputTokens y devuelve la frase cortada (finishReason MAX_TOKENS).
 THINKING_LEVEL = os.environ.get("GEMINI_THINKING_LEVEL", "minimal")
+
+# Cuántos tokens gasta la imagen. A diferencia de Groq, aquí el tamaño de la
+# imagen NO cambia el precio: Gemini la normaliza y cobra fijo. Medido con
+# gemini-3.1-flash-lite y la misma foto:
+#
+#   MEDIA_RESOLUTION_LOW     286 tokens  — pero confundió la plaza de la foto
+#   MEDIA_RESOLUTION_MEDIUM  577 tokens  — misma respuesta que HIGH
+#   MEDIA_RESOLUTION_HIGH  1.133 tokens  — es lo que usa si no dices nada
+#
+# Se deja el valor de la API por defecto: bajarlo es la forma de estirar la
+# cuota, pero con LOW ya se vio perder precisión y esto son unas gafas para
+# orientarse. Ponlo a MEDIUM si necesitas el doble de pruebas por cuota.
+MEDIA_RESOLUTION = os.environ.get("GEMINI_MEDIA_RESOLUTION", "").upper()
 
 # Sirve para abrir la conexión TLS sin gastar tokens (ver vision.warmup).
 WARMUP_URL = f"{BASE_URL}/models"
@@ -74,7 +89,17 @@ def _payload(
         "candidateCount": 1,
     }
     if con_thinking:
-        generation["thinkingLevel"] = THINKING_LEVEL
+        # Va anidado en thinkingConfig. Suelto en generationConfig la API lo
+        # rechaza con 400 ("Unknown name thinkingLevel"), comprobado contra
+        # gemini-3.1-flash-lite.
+        generation["thinkingConfig"] = {"thinkingLevel": THINKING_LEVEL}
+    if MEDIA_RESOLUTION:
+        # Acepta tanto "LOW" como "MEDIA_RESOLUTION_LOW", que es lo que
+        # espera la API.
+        res = MEDIA_RESOLUTION
+        generation["mediaResolution"] = (
+            res if res.startswith("MEDIA_RESOLUTION_") else f"MEDIA_RESOLUTION_{res}"
+        )
 
     return {
         "systemInstruction": {"parts": [{"text": system_prompt}]},
