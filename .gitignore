@@ -7,3 +7,6 @@ venv/
 data/
 *.db
 *.mp3
+
+# Fotos de prueba que se dejan caer en la carpeta al probar "describe"
+images.jpg

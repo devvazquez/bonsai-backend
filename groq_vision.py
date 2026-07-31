@@ -15,6 +15,37 @@ MODEL = os.environ.get("GROQ_VISION_MODEL", "qwen/qwen3.6-27b")
 
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 
+# Groq no siempre manda la cabecera retry-after, pero sí dice el rato en el
+# texto del error: "Please try again in 16.56s" (o "in 12m39.024s").
+_ESPERA_RE = re.compile(r"try again in\s+(?:(\d+)m)?([\d.]+)s", re.IGNORECASE)
+
+
+class GroqRateLimit(Exception):
+    """Se ha agotado la cuota de Groq (429).
+
+    Se distingue del resto de errores para poder devolver un 429 al cliente,
+    con el rato que hay que esperar, en vez de un 502 genérico que parece un
+    fallo del servidor cuando en realidad solo hay que esperar.
+    """
+
+    def __init__(self, mensaje: str, retry_after: float | None = None) -> None:
+        super().__init__(mensaje)
+        self.retry_after = retry_after
+
+
+def _segundos_de_espera(resp: httpx.Response) -> float | None:
+    cabecera = resp.headers.get("retry-after")
+    if cabecera:
+        try:
+            return float(cabecera)
+        except ValueError:
+            pass
+    m = _ESPERA_RE.search(resp.text)
+    if m:
+        minutos = float(m.group(1) or 0)
+        return minutos * 60 + float(m.group(2))
+    return None
+
 # Un solo cliente para todo el proceso, en vez de uno nuevo por petición:
 # abrir la conexión TLS con api.groq.com cuesta ~220 ms medidos, y así se paga
 # una vez y no en cada foto. `retries` cubre el caso de que Groq haya cerrado
@@ -84,6 +115,12 @@ async def describe_image(
         },
         timeout=timeout,
     )
+
+    if resp.status_code == 429:
+        raise GroqRateLimit(
+            f"Cuota de Groq agotada: {resp.text[:300]}",
+            _segundos_de_espera(resp),
+        )
 
     if resp.status_code >= 400:
         raise RuntimeError(f"Error de Groq ({resp.status_code}): {resp.text[:300]}")

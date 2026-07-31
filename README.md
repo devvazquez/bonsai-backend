@@ -182,6 +182,18 @@ Respuesta:
 `timings` viene en todas las respuestas: es la forma rápida de ver en qué
 etapa se va el tiempo sin tocar los logs.
 
+### Errores de `/describe`
+
+| Código | Significa | Qué hacer |
+| --- | --- | --- |
+| `429` | Cuota de Groq agotada | Esperar y reintentar. Viene con la cabecera `Retry-After` en segundos, sacada de la respuesta de Groq |
+| `502` | Groq o edge-tts han fallado de verdad | Mirar los logs; el detalle del error va en el cuerpo |
+| `500` | Falta `GROQ_API_KEY` en el servidor | Revisar el `.env` |
+
+Conviene que la app distinga el `429`: no es un fallo, solo hay que esperar
+los segundos que diga `Retry-After` y volver a intentarlo, sin dar error a la
+persona que lleva las gafas.
+
 ### Autenticación
 
 Todos los endpoints salvo `/health` piden la cabecera:
@@ -442,10 +454,9 @@ texto nuevo, no de los de un `/speak` repetido en pruebas.
   sin tocar el código.
 - **Límites del plan gratuito de Groq**: cada foto gasta ~1.800 tokens, y el
   plan da 8.000 tokens por minuto y 200.000 al día. Salen unas **4 fotos por
-  minuto y ~110 al día**. Al pasarse, `/describe` devuelve un 502 con el
-  mensaje de Groq (`Rate limit reached ... try again in N s`). Como el coste por
-  imagen es fijo, mandarla más pequeña no da más margen: si las gafas se van a
-  usar de verdad a diario, hace falta el plan de pago.
+  minuto y ~110 al día**. Como el coste por imagen es fijo, mandarla más pequeña
+  no da más margen: si las gafas se van a usar de verdad a diario, hace falta el
+  plan de pago.
 - **edge-tts** usa un protocolo que Microsoft no documenta oficialmente (el
   mismo que la librería de Python homónima, muy usada y mantenida). Funciona
   bien, pero conviene saber que podría romperse si Microsoft lo cambiara.

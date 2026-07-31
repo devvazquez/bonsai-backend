@@ -149,6 +149,13 @@ async def describe(req: DescribeRequest) -> dict[str, Any]:
             system_prompt=build_system_prompt(lang, memory_context),
             user_prompt=req.prompt or "¿Qué tengo delante? Dímelo en una o dos frases.",
         )
+    except groq_vision.GroqRateLimit as e:
+        # 429 y no 502: no es que el servidor falle, es que hay que esperar.
+        # Así el cliente puede reintentar solo en vez de dar error a la persona.
+        cabeceras = {}
+        if e.retry_after is not None:
+            cabeceras["Retry-After"] = str(max(1, round(e.retry_after)))
+        raise HTTPException(429, str(e), headers=cabeceras) from e
     except Exception as e:
         raise HTTPException(502, f"Fallo al describir la imagen: {e}") from e
     timings["vision_ms"] = int((time.perf_counter() - t0) * 1000)
