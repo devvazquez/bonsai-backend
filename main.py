@@ -113,6 +113,16 @@ def build_system_prompt(lang: str, memory_context: str) -> str:
         "es lo prioritario. Si te hacen una pregunta concreta, responde solo a "
         "esa pregunta. "
         f"Responde SIEMPRE en {lang_name}.",
+        # Los modelos sueltan topónimos con total aplomo y se equivocan: con
+        # una foto de una plaza de Reus, uno dijo Vilanova i la Geltrú y otro
+        # la plaça Reial de Barcelona. Quien lleva las gafas no tiene forma de
+        # saber que es mentira, así que un nombre inventado desorienta más que
+        # no decir ninguno.
+        "No adivines nunca nombres propios: ni ciudades, ni plazas, ni calles, "
+        "ni comercios, ni monumentos. Dilos solo si los estás leyendo en un "
+        "cartel o un rótulo de la imagen, y entonces di que los lees. Si no, "
+        "describe el sitio por lo que es. Ante la duda, calla el nombre: es "
+        "mejor «una plaza grande con terrazas» que un nombre equivocado.",
     ]
     if memory_context:
         parts.append(
