@@ -18,12 +18,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-import groq_vision
 import memory
 import tts
-from groq_vision import describe_image
-
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
+import vision
+from vision import VisionRateLimit, describe_error
 
 # Token para proteger el endpoint. Al estar expuesto a internet, sin esto
 # cualquiera que descubra la URL podría gastar tu cuota de Groq.
@@ -55,13 +53,16 @@ def require_token(x_api_token: str | None = Header(default=None)) -> None:
 
 
 @app.on_event("startup")
-def _startup() -> None:
+async def _startup() -> None:
     memory.init_db()
+    # Abre la conexión TLS con el proveedor por defecto antes de la primera
+    # foto: son ~220 ms que, si no, los paga quien lleve las gafas.
+    await vision.warmup()
 
 
 @app.on_event("shutdown")
 async def _shutdown() -> None:
-    await groq_vision.aclose()
+    await vision.aclose()
 
 
 # --------------------------------------------------------------------------
@@ -74,6 +75,8 @@ class DescribeRequest(BaseModel):
     lang: str | None = None   # 'ca', 'es', 'en'
     voice: str | None = None  # fuerza una voz concreta de edge-tts
     audio: bool = True        # a False, solo devuelve el texto (más rápido)
+    # 'gemini' o 'groq'. Si no se dice nada, el de VISION_PROVIDER (gemini).
+    provider: str | None = None
 
 
 class MemoryRequest(BaseModel):
@@ -122,15 +125,31 @@ def health() -> dict[str, Any]:
     """Sin token: lo usa el healthcheck de Docker."""
     return {
         "ok": True,
-        "groqKeyConfigured": bool(GROQ_API_KEY),
         "authRequired": bool(API_TOKEN),
+        "defaultProvider": vision.DEFAULT_PROVIDER,
+        "providers": {
+            p: {
+                "model": vision.model_for(p),
+                "keyConfigured": bool(vision.api_key_for(p)),
+            }
+            for p in vision.PROVIDERS
+        },
     }
 
 
 @app.post("/describe", dependencies=[Depends(require_token)])
 async def describe(req: DescribeRequest) -> dict[str, Any]:
-    if not GROQ_API_KEY:
-        raise HTTPException(500, "GROQ_API_KEY no está configurada en el servidor.")
+    try:
+        provider = vision.resolve(req.provider)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+    api_key = vision.api_key_for(provider)
+    if not api_key:
+        variable = "GEMINI_API_KEY" if provider == "gemini" else "GROQ_API_KEY"
+        raise HTTPException(
+            500, f"{variable} no está configurada en el servidor (proveedor: {provider})."
+        )
 
     lang = (req.lang or tts.DEFAULT_LANG).lower()
     timings: dict[str, int] = {}
@@ -143,13 +162,14 @@ async def describe(req: DescribeRequest) -> dict[str, Any]:
     # 2. Visión
     t0 = time.perf_counter()
     try:
-        description = await describe_image(
-            api_key=GROQ_API_KEY,
+        description = await vision.describe_image(
+            provider=provider,
+            api_key=api_key,
             image_base64=req.image,
             system_prompt=build_system_prompt(lang, memory_context),
             user_prompt=req.prompt or "¿Qué tengo delante? Dímelo en una o dos frases.",
         )
-    except groq_vision.GroqRateLimit as e:
+    except VisionRateLimit as e:
         # 429 y no 502: no es que el servidor falle, es que hay que esperar.
         # Así el cliente puede reintentar solo en vez de dar error a la persona.
         cabeceras = {}
@@ -157,13 +177,22 @@ async def describe(req: DescribeRequest) -> dict[str, Any]:
             cabeceras["Retry-After"] = str(max(1, round(e.retry_after)))
         raise HTTPException(429, str(e), headers=cabeceras) from e
     except Exception as e:
-        raise HTTPException(502, f"Fallo al describir la imagen: {e}") from e
+        # describe_error y no str(e): los timeouts de httpx tienen el mensaje
+        # vacío y el cliente recibía «Fallo al describir la imagen: » a secas.
+        raise HTTPException(
+            502, f"Fallo al describir la imagen: {describe_error(e)}"
+        ) from e
     timings["vision_ms"] = int((time.perf_counter() - t0) * 1000)
 
     if not description:
         raise HTTPException(502, "El modelo de visión devolvió una respuesta vacía.")
 
-    result: dict[str, Any] = {"text": description, "lang": lang}
+    result: dict[str, Any] = {
+        "text": description,
+        "lang": lang,
+        "provider": provider,
+        "model": vision.model_for(provider),
+    }
 
     # 3. Voz (opcional)
     if req.audio:
@@ -172,7 +201,9 @@ async def describe(req: DescribeRequest) -> dict[str, Any]:
         try:
             audio_bytes = await tts.synthesize(description, voice)
         except Exception as e:
-            raise HTTPException(502, f"Fallo al generar el audio: {e}") from e
+            raise HTTPException(
+                502, f"Fallo al generar el audio: {describe_error(e)}"
+            ) from e
         timings["tts_ms"] = int((time.perf_counter() - t0) * 1000)
 
         result["audio"] = base64.b64encode(audio_bytes).decode("ascii")
@@ -200,7 +231,9 @@ async def speak(text: str, lang: str = tts.DEFAULT_LANG, voice: str | None = Non
     except StopAsyncIteration:
         raise HTTPException(502, "edge-tts no devolvió audio.") from None
     except Exception as e:
-        raise HTTPException(502, f"Fallo al generar el audio: {e}") from e
+        raise HTTPException(
+            502, f"Fallo al generar el audio: {describe_error(e)}"
+        ) from e
 
     async def cuerpo():
         yield primero

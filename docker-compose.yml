@@ -10,9 +10,15 @@ services:
       # puedes comentar esta línea: Caddy se encarga de exponerlo.
       - "127.0.0.1:8080:8080"
     environment:
-      - GROQ_API_KEY=${GROQ_API_KEY:?Define GROQ_API_KEY en el fichero .env}
+      # El proveedor por defecto es gemini, así que su key es la obligatoria.
+      # Si pones VISION_PROVIDER=groq, cambia el ":?" de sitio.
+      - VISION_PROVIDER=${VISION_PROVIDER:-gemini}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:?Define GEMINI_API_KEY en el fichero .env}
+      # Opcional: solo hace falta si pides "provider":"groq" en /describe.
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
       - BONSAI_API_TOKEN=${BONSAI_API_TOKEN:-}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-*}
+      # - GEMINI_VISION_MODEL=gemini-3.1-flash-lite
       # - GROQ_VISION_MODEL=qwen/qwen3.6-27b
     volumes:
       # Aquí vive la base de datos de los recuerdos, para que sobrevivan a

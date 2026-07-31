@@ -1,4 +1,12 @@
-"""Cliente de la API de Groq para describir imágenes (modelo de visión)."""
+"""Cliente de la API de Groq para describir imágenes (modelo de visión).
+
+Misma interfaz que `gemini_vision`, así que `vision.py` puede usar uno u otro
+sin que `main.py` se entere.
+
+Es el proveedor más rápido de los dos, pero su capa gratuita es muy justa
+(8.000 tokens/minuto y 200.000 al día, y el límite es por organización, no por
+API key), así que no es el de por defecto.
+"""
 
 from __future__ import annotations
 
@@ -7,7 +15,12 @@ import re
 
 import httpx
 
+from vision import VisionRateLimit, get_client, sniff_mime
+
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+
+# Sirve para abrir la conexión TLS sin gastar tokens (ver vision.warmup).
+WARMUP_URL = "https://api.groq.com/openai/v1/models"
 
 # Comprueba el nombre vigente en https://console.groq.com/docs/models
 # (Groq renombra y retira modelos con frecuencia).
@@ -20,17 +33,17 @@ _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 _ESPERA_RE = re.compile(r"try again in\s+(?:(\d+)m)?([\d.]+)s", re.IGNORECASE)
 
 
-class GroqRateLimit(Exception):
-    """Se ha agotado la cuota de Groq (429).
+# Se mantiene el nombre antiguo: era lo que capturaba main.py y puede haber
+# código fuera que lo importe. Ahora es la excepción compartida.
+GroqRateLimit = VisionRateLimit
 
-    Se distingue del resto de errores para poder devolver un 429 al cliente,
-    con el rato que hay que esperar, en vez de un 502 genérico que parece un
-    fallo del servidor cuando en realidad solo hay que esperar.
-    """
 
-    def __init__(self, mensaje: str, retry_after: float | None = None) -> None:
-        super().__init__(mensaje)
-        self.retry_after = retry_after
+def api_key() -> str:
+    return os.environ.get("GROQ_API_KEY", "")
+
+
+def auth_headers(key: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
 
 
 def _segundos_de_espera(resp: httpx.Response) -> float | None:
@@ -45,30 +58,6 @@ def _segundos_de_espera(resp: httpx.Response) -> float | None:
         minutos = float(m.group(1) or 0)
         return minutos * 60 + float(m.group(2))
     return None
-
-# Un solo cliente para todo el proceso, en vez de uno nuevo por petición:
-# abrir la conexión TLS con api.groq.com cuesta ~220 ms medidos, y así se paga
-# una vez y no en cada foto. `retries` cubre el caso de que Groq haya cerrado
-# la conexión que teníamos guardada mientras no se usaba.
-_client: httpx.AsyncClient | None = None
-
-
-def _get_client() -> httpx.AsyncClient:
-    global _client
-    if _client is None or _client.is_closed:
-        _client = httpx.AsyncClient(
-            transport=httpx.AsyncHTTPTransport(retries=2),
-            limits=httpx.Limits(max_keepalive_connections=4, keepalive_expiry=300),
-        )
-    return _client
-
-
-async def aclose() -> None:
-    """Cierra la conexión al apagar el servidor."""
-    global _client
-    if _client is not None and not _client.is_closed:
-        await _client.aclose()
-    _client = None
 
 
 async def describe_image(
@@ -98,7 +87,9 @@ async def describe_image(
                     {
                         "type": "image_url",
                         "image_url": {
-                            "url": f"data:image/jpeg;base64,{image_base64}"
+                            # El formato se detecta de verdad: antes iba
+                            # "image/jpeg" fijo aunque la imagen fuese PNG.
+                            "url": f"data:{sniff_mime(image_base64)};base64,{image_base64}"
                         },
                     },
                 ],
@@ -106,18 +97,15 @@ async def describe_image(
         ],
     }
 
-    resp = await _get_client().post(
+    resp = await get_client().post(
         GROQ_URL,
         json=payload,
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
+        headers=auth_headers(api_key),
         timeout=timeout,
     )
 
     if resp.status_code == 429:
-        raise GroqRateLimit(
+        raise VisionRateLimit(
             f"Cuota de Groq agotada: {resp.text[:300]}",
             _segundos_de_espera(resp),
         )

@@ -162,7 +162,8 @@ El repositorio incluye una `image.png` de ejemplo para probar sin buscar fotos.
   "prompt": "¿Qué dice el cartel?",   // opcional; por defecto, descripción general
   "lang": "ca",                        // opcional: ca | es | en
   "voice": "ca-ES-EnricNeural",        // opcional: fuerza una voz concreta
-  "audio": true                        // a false devuelve solo texto (mucho más rápido)
+  "audio": true,                       // a false devuelve solo texto (mucho más rápido)
+  "provider": "gemini"                 // opcional: gemini | groq. Por defecto, VISION_PROVIDER
 }
 ```
 
@@ -172,6 +173,8 @@ Respuesta:
 {
   "text": "Estàs en una plaça empedrada amb edificis antics i llums de carrer enceses. Hi ha gent passejant i terrasses de cafès al fons.",
   "lang": "ca",
+  "provider": "gemini",
+  "model": "gemini-3.1-flash-lite",
   "audio": "<MP3 en base64>",
   "audioFormat": "mp3",
   "voice": "ca-ES-JoanaNeural",
@@ -182,13 +185,36 @@ Respuesta:
 `timings` viene en todas las respuestas: es la forma rápida de ver en qué
 etapa se va el tiempo sin tocar los logs.
 
+### Elegir el proveedor de visión
+
+Hay dos, con la misma interfaz, y se puede cambiar por petición con el campo
+`provider` sin reiniciar nada:
+
+| Proveedor | Modelo por defecto | Capa gratuita | Para qué |
+| --- | --- | --- | --- |
+| `gemini` (por defecto) | `gemini-3.1-flash-lite` | 250.000 tokens/min, 1.500 peticiones/día | El del día a día: la cuota da para desarrollar de verdad |
+| `groq` | `qwen/qwen3.6-27b` | 8.000 tokens/min, 200.000 tokens/día | Más rápido, pero la cuota se agota en unas pocas fotos sin reducir |
+
+El límite de Groq es **por organización, no por API key**: crear una key nueva
+no reinicia el contador.
+
+Y un aviso que no es técnico: en la **capa gratuita** de Google, Google entrena
+con lo que le mandas (*"Google uses the content you submit to the Services and
+any generated responses to provide, improve, and develop Google products"*). En
+la de pago, no. Para unas gafas que fotografían la calle y a la gente que pasa,
+eso cuenta.
+
+`GET /health` dice en todo momento cuál es el proveedor por defecto, qué modelo
+usa cada uno y si su key está configurada.
+
 ### Errores de `/describe`
 
 | Código | Significa | Qué hacer |
 | --- | --- | --- |
-| `429` | Cuota de Groq agotada | Esperar y reintentar. Viene con la cabecera `Retry-After` en segundos, sacada de la respuesta de Groq |
-| `502` | Groq o edge-tts han fallado de verdad | Mirar los logs; el detalle del error va en el cuerpo |
-| `500` | Falta `GROQ_API_KEY` en el servidor | Revisar el `.env` |
+| `429` | Cuota del proveedor agotada | Esperar y reintentar. Viene con la cabecera `Retry-After` en segundos, sacada de la respuesta del proveedor |
+| `502` | El proveedor o edge-tts han fallado de verdad | Mirar los logs; el detalle del error va en el cuerpo, con el tipo de excepción |
+| `500` | Falta la key del proveedor elegido | Revisar el `.env` |
+| `400` | `provider` no es `gemini` ni `groq` | Corregir la petición |
 
 Conviene que la app distinga el `429`: no es un fallo, solo hay que esperar
 los segundos que diga `Retry-After` y volver a intentarlo, sin dar error a la
@@ -357,9 +383,13 @@ ahorra tener que decodificar base64 en el microcontrolador.
 
 | Variable | Por defecto | Para qué sirve |
 | --- | --- | --- |
-| `GROQ_API_KEY` | — | **Obligatoria.** Clave de [console.groq.com](https://console.groq.com) |
+| `VISION_PROVIDER` | `gemini` | Proveedor de visión por defecto: `gemini` o `groq` |
+| `GEMINI_API_KEY` | — | **Obligatoria** con el proveedor por defecto. Clave de [aistudio.google.com/apikey](https://aistudio.google.com/apikey) |
+| `GROQ_API_KEY` | — | Obligatoria solo si usas `groq`. Clave de [console.groq.com](https://console.groq.com) |
 | `BONSAI_API_TOKEN` | vacío | Protege la API. Vacío = sin autenticación |
 | `ALLOWED_ORIGINS` | `*` | Orígenes CORS permitidos, separados por comas |
+| `GEMINI_VISION_MODEL` | `gemini-3.1-flash-lite` | Modelo de Gemini. Más calidad: `gemini-3.5-flash` |
+| `GEMINI_THINKING_LEVEL` | `minimal` | Razonamiento de Gemini. Subirlo añade latencia sin mejorar una descripción de dos frases |
 | `GROQ_VISION_MODEL` | `qwen/qwen3.6-27b` | Modelo de visión, por si Groq lo renombra |
 | `BONSAI_DB_PATH` | `/data/bonsai.db` o `./data/bonsai.db` | Ruta de la base de datos de recuerdos |
 | `BONSAI_DOMAIN` | — | Dominio para el HTTPS automático (solo con el perfil `caddy`) |
@@ -374,10 +404,13 @@ ahorra tener que decodificar base64 en el microcontrolador.
 | Fichero | Contenido |
 | --- | --- |
 | `main.py` | La API: endpoints, autenticación, construcción del prompt |
-| `groq_vision.py` | Cliente de Groq para describir imágenes |
+| `vision.py` | Lo común a los proveedores: cliente HTTP, cuota agotada, formato de imagen |
+| `gemini_vision.py` | Cliente de Gemini (el proveedor por defecto) |
+| `groq_vision.py` | Cliente de Groq |
 | `tts.py` | Texto a voz con edge-tts y selección de voz por idioma |
 | `memory.py` | Recuerdos por dispositivo en SQLite |
 | `test_bonsai.py` | Terminal de pruebas, sin dependencias |
+| `bench_latency.py` | Banco de pruebas de latencia, con tope de cuota |
 | `Dockerfile`, `docker-compose.yml`, `Caddyfile` | Despliegue |
 | `run-local.ps1`, `run-local.sh` | Desarrollo en local sin Docker |
 
@@ -409,15 +442,34 @@ para poder repetir las mediciones.
 | edge-tts, texto nuevo | 1,5-2,0 s hasta el primer trozo de audio | Escala con la longitud del texto |
 | Escuchar el audio | ~10 s | 1-2 frases. Es el tramo más largo de todos |
 
+#### Reducir la imagen sí importa (corrección)
+
+Aquí decía antes que reducir la imagen no bajaba el coste, con una medición de
+1.812 `prompt_tokens` fijos. **Eso ya no se sostiene**, medido otra vez contra
+`qwen/qwen3.6-27b`:
+
+| Imagen | Tamaño | Latencia de visión | Tokens de entrada |
+| --- | --- | --- | --- |
+| 3024x4032 (foto de móvil) | 3,1 MB | 2,4-3,8 s | ~50.000 (estimado) |
+| 672x896 (lado largo 896 px) | 64 KB | **1,07-1,16 s** | **2.656 (dicho por Groq)** |
+
+Los 2.656 no son estimación: los dijo el propio error 429 de Groq
+(`Requested 2656`). Con la foto sin reducir se agotaron los 200.000 tokens del
+día en unas seis peticiones. Así que reducir a 896 px es **3,5 veces más rápido
+y unas 20 veces más barato**, no solo un ahorro de subida.
+
+Reducir en el servidor cuesta ~200 ms de CPU con Pillow para una foto de 12 MP,
+que sigue siendo un cambio muy favorable. Está pendiente de hacer: hoy depende
+de que el cliente se acuerde.
+
 Cosas comprobadas que **no** ayudan, para no perder el tiempo con ellas:
 
-- **Comprimir o reducir la imagen no baja el coste.** Groq cobra la imagen a
-  tanto alzado: medido, 1.812 `prompt_tokens` tanto con 1600x1065 (191 KB) como
-  con 336x224 (18 KB), y su cómputo sigue siendo 0,17 s. Reducirla solo sirve
-  para que la app tarde menos en subirla (eso sí importa con datos móviles) y
-  para acortar el envío por BLE desde la ESP32.
-- **Cambiar de modelo de visión no es una opción**: en Groq solo hay uno
-  (`qwen/qwen3.6-27b`); el resto de su catálogo es texto, transcripción o TTS.
+- **Partir el texto en frases y sintetizarlas en paralelo sale peor** (ver
+  abajo).
+- **En Groq no hay alternativa de modelo de visión**: solo `qwen/qwen3.6-27b`;
+  el resto de su catálogo es texto, transcripción o TTS. Para cambiar de modelo
+  hay que cambiar de proveedor, que es justo lo que permite el campo
+  `provider`.
 - **Partir el texto en frases y sintetizarlas en paralelo sale peor**: cada
   frase abre su propio WebSocket con Microsoft (~1,5 s), y compitiendo entre
   ellas el primer audio llegaba a los 2,4-5,6 s en vez de 1,5-2,0 s.
@@ -428,8 +480,11 @@ Cosas que sí ayudan y ya están hechas:
   `groq_vision.py` no es decorativo: sin él el modelo escribe un bloque
   `<think>` que se come los 150 tokens y devuelve la respuesta truncada
   (medido: 2,28 s y respuesta inservible, contra 1,26 s y respuesta correcta).
-- **Una sola conexión con Groq** para todo el proceso, en vez de abrir una por
-  foto: el handshake TLS son ~220 ms medidos que ahora se pagan una vez.
+- **Una sola conexión con el proveedor** para todo el proceso, en vez de abrir
+  una por foto: el handshake TLS son ~220 ms medidos que ahora se pagan una vez.
+  Además se abre al arrancar (`vision.warmup()`), así que ni siquiera los paga
+  la primera persona que use las gafas. El calentamiento pide un listado de
+  modelos: no gasta ni un token.
 - **Respuestas de 1 o 2 frases** (prompt + `max_completion_tokens: 150`):
   acorta las dos etapas que escalan con la longitud. Medido con la misma foto,
   pasar de 49 a 23 palabras baja la locución de ~21 s a ~10 s.
@@ -440,6 +495,38 @@ Cosas que sí ayudan y ya están hechas:
 `/describe` con `"audio": false` (texto en ~0,9 s, se puede mostrar ya) y a
 continuación `/speak` con ese texto, que va llegando a trozos. Así no se espera
 a tener todo el audio generado antes de empezar a oír algo.
+
+#### Medirlo tú mismo: `bench_latency.py`
+
+Mide el desglose (reducir, codificar, red, visión, TTS) y **por defecto no gasta
+cuota**: enseña cuántas peticiones haría y cuántos tokens costaría, y no llama a
+nadie hasta que se lo confirmas con `--yes`.
+
+```sh
+# 0 tokens: comprueba el código (formato de imagen, 429, payloads, errores)
+python bench_latency.py --selftest
+
+# 0 tokens: ensayo, dice lo que costaría
+python bench_latency.py --provider both --image foto.jpg
+
+# Gasta cuota: lo mínimo para tener el dato
+python bench_latency.py --provider gemini --image foto.jpg --only-small --yes
+
+# Compara proveedores con la misma foto
+python bench_latency.py --provider both --image foto.jpg --sizes 896 --yes
+
+# Time to first token: ¿merece la pena mandar el texto al TTS a trozos?
+python bench_latency.py --provider gemini --image foto.jpg --mode ttft --yes
+```
+
+Se para en cuanto ve un 429, para no insistir contra una cuota agotada, y aborta
+antes de empezar si el plan pasa de `--budget` (20.000 tokens por defecto).
+Necesita Pillow (`pip install pillow`) para las variantes reducidas; sin él mide
+solo la imagen original.
+
+El modo `ttft` es el que dice si queda latencia por ganar: si el primer token
+llega mucho antes de que termine la frase, conviene ir mandando el texto al TTS
+a medida que llega en vez de esperar la respuesta completa.
 
 Un detalle que despista al medir: **Microsoft cachea el audio por texto y voz**.
 Repetir la misma frase da ~0,5 s, mientras que una frase nueva cuesta 1,5-2,0 s.
