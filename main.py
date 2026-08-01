@@ -7,9 +7,9 @@ audio en crudo y en streaming, listo para el I2S del MAX98357A, sin base64 ni
 nada que descodificar en el microcontrolador.
 
 El resto es servicio: `/memory` para los recuerdos, `/speak` para texto a voz
-suelto y dos páginas HTML (`/provar` y `/memoria`) que sirven para probar y
-administrar desde un navegador. No hay ninguna aplicación web en el camino
-principal.
+suelto, la página `/provar` para probarlo desde el móvil y el panel `/admin`
+(`panel.py`) para administrar la base de datos. No hay ninguna aplicación web
+en el camino principal.
 """
 
 from __future__ import annotations
@@ -156,9 +156,9 @@ def build_system_prompt(lang: str, memory_context: str) -> str:
 # Endpoints
 # --------------------------------------------------------------------------
 def _pagina(nombre: str) -> HTMLResponse:
-    """Sirve un HTML de static/. Sin token: son páginas, no datos.
+    """Sirve un HTML de static/. Sin token: es una página, no datos.
 
-    Lo que hay detrás sí está protegido: las dos piden los datos a la API con
+    Lo que hay detrás sí está protegido: la página pide los datos a la API con
     la cabecera X-API-Token, así que servir el HTML no expone nada.
     """
     ruta = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", nombre)
@@ -181,16 +181,6 @@ def probar() -> HTMLResponse:
     nada aparte: se abre la IP del servidor en el móvil y ya está.
     """
     return _pagina("probar.html")
-
-
-@app.get("/memoria", response_class=HTMLResponse)
-def memoria() -> HTMLResponse:
-    """Interfaz visual para ver y editar la memoria de cada dispositivo.
-
-    Hasta ahora la base de datos solo se podía tocar a golpe de curl y había
-    que saberse los deviceId de memoria.
-    """
-    return _pagina("memoria.html")
 
 
 @app.get("/health")
@@ -514,7 +504,7 @@ async def voices(prefix: str = "", tts_provider: str | None = None) -> dict[str,
 # --------------------------------------------------------------------------
 # Es acceso SQL completo, así que solo se monta si hay ADMIN_PASSWORD. Sin
 # ella la ruta no existe, que es más seguro que existir y estar abierta.
-# Para el día a día no hace falta: /memoria ya deja editar los recuerdos.
+# Los recuerdos también se pueden tocar por la API con /memory, sin SQL.
 if os.environ.get("ADMIN_PASSWORD"):
     import panel as _panel
     from nicegui import ui as _ui

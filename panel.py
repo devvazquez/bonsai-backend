@@ -872,7 +872,7 @@ def construeix(mount_path: str = "/admin") -> None:
                         f"color:{C['faint']};font-size:10px;letter-spacing:.07em;"
                         "text-transform:uppercase")
             ui.element("div").style(f"width:1px;height:26px;background:{C['line']}")
-            ui.link("Memòria", "/memoria").style(
+            ui.link("Provar", "/provar").style(
                 f"color:{C['dim']};font-size:13px;text-decoration:none").classes(
                 "cursor-pointer hover:underline")
             ui.button(icon="logout", on_click=surt).props(

@@ -44,14 +44,15 @@ else
 fi
 if [ -z "$CLAVE" ] || [ "$CLAVE" = "$ESPERADO" ]; then
   echo
-  echo "Falta $NOMBRE en el .env: /describe y /look darán error 500."
-  echo "El resto (/speak, /memory, /voices, /probar) sí funcionará:"
+  echo "Falta $NOMBRE en el .env: /look dará error 500."
+  echo "El resto (/speak, /memory, /voices, /provar) sí funcionará:"
   echo "la voz es Piper y va en local, sin ninguna clave."
 fi
 
 echo
 echo "  Servidor:      http://127.0.0.1:8080"
-echo "  Desde el móvil: http://127.0.0.1:8080/probar"
+echo "  Desde el móvil: http://127.0.0.1:8080/provar"
+echo "  Base de datos: http://127.0.0.1:8080/admin  (solo con ADMIN_PASSWORD)"
 echo "  Documentación: http://127.0.0.1:8080/docs"
 echo "  Para probarlo: python test_bonsai.py  (en otra terminal)"
 echo "  Ctrl+C para parar."

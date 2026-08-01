@@ -32,31 +32,20 @@ estimades — el detall i el perquè de cada decisió és a
 
 ---
 
-## Tres pàgines, per provar-ho i per administrar-ho
+## Dues pàgines, per provar-ho i per administrar-ho
 
-El mateix backend les serveix totes tres, sense dependències ni CORS.
-
-<table>
-<tr><td width="50%">
+Les serveix el mateix backend, sense dependències ni CORS, i comparteixen
+aspecte: negre i blau.
 
 **[`/provar`](static/probar.html)** — fes una foto des del mòbil i escolta la
 resposta. Redueix la imatge abans de pujar-la i ensenya el desglossament de
 temps.
 
-<img src="docs/img/provar.png" width="320" alt="Pàgina /provar en un mòbil, mostrant una foto d'una plaça, el text descrit i la taula de temps">
+<img src="docs/img/provar.png" width="320" alt="Pàgina /provar en un mòbil: proveïdor, idioma, veu, pregunta opcional i el botó de fer una foto">
 
-</td><td width="50%">
-
-**[`/memoria`](static/memoria.html)** — veure, afegir, editar i esborrar els
-records de cada dispositiu sense tocar SQL.
-
-<img src="docs/img/memoria.png" width="480" alt="Pàgina /memoria mostrant la llista de dispositius i els records d'un d'ells">
-
-</td></tr>
-</table>
-
-Per a tot el que `/memoria` no cobreix hi ha **`/admin`**: explorar qualsevol
-taula, crear-ne, afegir columnes, editar files i executar SQL a mà.
+**`/admin`** — explorar qualsevol taula, crear-ne, afegir columnes, editar
+files i executar SQL a mà. També és per on es toquen els records: la taula
+`memories`.
 
 <img src="docs/img/panel.png" width="640" alt="Panell /admin amb la llista de taules a l'esquerra i les files de memories a la dreta">
 
@@ -92,7 +81,7 @@ El primer cop crea el `.env` i s'atura perquè hi posis la `GROQ_API_KEY`. El
 tornes a executar i arrenca amb recàrrega automàtica.
 
 - API: <http://127.0.0.1:8080> · Swagger: `/docs`
-- Provar amb una foto: `/provar` · Administrar la memòria: `/memoria`
+- Provar amb una foto: `/provar`
 - Administrar la base de dades: `/admin` (només amb `ADMIN_PASSWORD` definida)
 - `/health` diu quin proveïdor hi ha actiu i si Piper ha carregat bé
 
@@ -131,7 +120,7 @@ bonsai> help
 | --- | --- | --- |
 | `POST` | `/look` | **Endpoint principal**: foto → àudio en cru i en streaming |
 | `POST` | `/speak?text=...&lang=ca` | Només text a veu |
-| `GET`/`POST` | `/memory` | Dispositius i records (veure `/memoria`) |
+| `GET`/`POST` | `/memory` | Dispositius i records |
 | `PATCH`/`DELETE` | `/memory/{deviceId}/{id}` | Corregeix o esborra un record |
 | `GET` | `/voices?prefix=ca` | Veus disponibles |
 | `GET` | `/health` | Estat del servei. Sense autenticació |
@@ -173,7 +162,7 @@ mono — exactament el que vol l'I2S del MAX98357A, sense conversió. Amb
 | `500` | Falta la clau del proveïdor triat |
 | `400` | Paràmetres invàlids (`provider`, `tts`, `audioFormat`...) |
 
-Tots els endpoints excepte `/health`, `/provar` i `/memoria` demanen
+Tots els endpoints excepte `/health` i `/provar` demanen
 `X-API-Token` si `BONSAI_API_TOKEN` està definit. `/admin` no fa servir el
 token: té la seva pròpia contrasenya (`ADMIN_PASSWORD`).
 
@@ -258,7 +247,7 @@ a [`.env.example`](.env.example), amb el perquè de cada valor per defecte.
 | `imagen.py` | Redueix la foto abans d'enviar-la al proveïdor |
 | `tts.py`, `piper_tts.py` | Motors de veu (Piper en local, edge-tts) |
 | `memory.py` | Records per dispositiu en SQLite |
-| `static/probar.html`, `static/memoria.html` | Les pàgines `/provar` i `/memoria` |
+| `static/probar.html` | La pàgina `/provar` |
 | `panel.py` | El panell `/admin` per administrar la base de dades |
 | `test_bonsai.py` | Terminal de proves, sense dependències |
 | `bench_latency.py` | Banc de proves de latència, amb topall de quota |

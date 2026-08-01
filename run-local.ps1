@@ -46,15 +46,16 @@ if ($proveedor -eq "groq") {
 }
 if (-not $clave -or $clave -eq $esperado) {
     Write-Host ""
-    Write-Host "Falta $nombre en el .env: /describe y /look daran error 500." -ForegroundColor Yellow
-    Write-Host "El resto (/speak, /memory, /voices, /probar) si funcionara:" -ForegroundColor Yellow
+    Write-Host "Falta $nombre en el .env: /look dara error 500." -ForegroundColor Yellow
+    Write-Host "El resto (/speak, /memory, /voices, /provar) si funcionara:" -ForegroundColor Yellow
     Write-Host "la voz es Piper y va en local, sin ninguna clave." -ForegroundColor Yellow
 }
 
 Write-Host ""
 Write-Host "  Servidor:      http://127.0.0.1:8080" -ForegroundColor Green
 Write-Host "  Documentacion: http://127.0.0.1:8080/docs" -ForegroundColor Green
-Write-Host "  Desde el movil: http://127.0.0.1:8080/probar" -ForegroundColor Green
+Write-Host "  Desde el movil: http://127.0.0.1:8080/provar" -ForegroundColor Green
+Write-Host "  Base de datos: http://127.0.0.1:8080/admin  (solo con ADMIN_PASSWORD)" -ForegroundColor Green
 Write-Host "  Para probarlo: python test_bonsai.py  (en otra terminal)" -ForegroundColor Green
 Write-Host "  Ctrl+C para parar."
 Write-Host ""

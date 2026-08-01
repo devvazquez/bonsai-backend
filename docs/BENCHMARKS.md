@@ -337,7 +337,7 @@ el costat del dispositiu.
   Funciona bé, però convé saber que es podria trencar si Microsoft el canviés.
   Amb el Piper per defecte, això ha deixat de ser un risc del camí principal.
 - **Memòria**: de moment només desa el que se li envia explícitament a
-  `POST /memory` o des de la pàgina `/memoria`. El següent pas natural seria
+  `POST /memory` o des del panell `/admin`. El següent pas natural seria
   demanar al model que tornés un camp `{"remember": "..."}` i desar-ho sol.
 - **Límit de records**: 50 per dispositiu (`MAX_ITEMS` a `memory.py`), perquè el
   prompt no creixi sense control.

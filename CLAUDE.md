@@ -55,8 +55,8 @@ Se ven en vivo en las cabeceras `x-ratelimit-*` de cualquier respuesta de Groq.
 2. **Una sola llamada por prueba**, no un barrido de idiomas y prompts. Cada variante es
    otra factura de tokens. `bench_latency.py` obliga a esto: sin `--yes` no llama a
    nadie, y aborta si el plan pasa de 20.000 tokens estimados.
-3. Para probar TTS, memoria o `/health` **no hace falta Groq**: usa `/speak`, `/memory` y
-   `/health`, que no tocan el proveedor de visión.
+3. Para probar TTS, memoria, el panel o `/health` **no hace falta Groq**: usa `/speak`,
+   `/memory`, `/admin` y `/health`, que no tocan el proveedor de visión.
 
 Medido con la imagen reducida a 896 px: visión ~1,1 s. Con la original de 3,1 MB: ~3,7 s.
 Reducir es más rápido *y* más barato.
@@ -179,13 +179,13 @@ Ojo con las licencias:
 
 ## Administrar la base de datos
 
-Dos herramientas, cada una para lo suyo:
+Una sola: **`/admin`** (`panel.py`). Explorar cualquier tabla, crearlas, añadir columnas,
+editar filas y ejecutar SQL a mano. Va con NiceGUI montado sobre el mismo FastAPI, así que
+no hay contenedor ni puerto aparte.
 
-- **`/memoria`**: página propia, para el día a día. Ver, añadir, editar y borrar recuerdos
-  por dispositivo, sin tocar SQL. Es la que hay que usar normalmente.
-- **`/admin`** (`panel.py`): explorar cualquier tabla, crearlas, añadir columnas, editar
-  filas y ejecutar SQL a mano. Va con NiceGUI montado sobre el mismo FastAPI, así que no
-  hay contenedor ni puerto aparte.
+Había además una página `/memoria` solo para los recuerdos; se eliminó porque `/admin` ya
+hace lo mismo y mejor. Los recuerdos se siguen pudiendo tocar por API con `/memory`, que
+es lo que usa el terminal de pruebas.
 
 Antes de escribirlo se probaron sqlite-web, DbGate y Outerbase Studio. Outerbase se
 descartó porque carga la interfaz desde `studio.outerbase.com` (sin internet te quedas
