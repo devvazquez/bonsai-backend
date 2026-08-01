@@ -1,15 +1,15 @@
 """Backend de Bonsai: orquesta visión + voz + memoria en una sola petición.
 
-Hay dos puertas de entrada, según quién llame:
+`/look` es el endpoint principal y lo llama la ESP32-S3 directamente: recibe la
+foto, la reduce, le añade contexto (fecha y recuerdos del dispositivo), pide la
+descripción al proveedor de visión (`vision.py`: Groq o Gemini) y devuelve el
+audio en crudo y en streaming, listo para el I2S del MAX98357A, sin base64 ni
+nada que descodificar en el microcontrolador.
 
-- `/describe` para navegadores: devuelve JSON con el audio en base64.
-- `/look` para la ESP32-S3: devuelve las muestras en crudo y en streaming,
-  listas para el I2S del MAX98357A.
-
-Las dos hacen lo mismo por dentro: reducen la foto, le añaden contexto (fecha y
-recuerdos del dispositivo), piden la descripción al proveedor de visión
-(`vision.py`, que elige entre Gemini y Groq) y la convierten a voz
-(`tts.py`, que elige entre Piper en local y edge-tts).
+El resto es servicio: `/memory` para los recuerdos, `/speak` para texto a voz
+suelto y dos páginas HTML (`/provar` y `/memoria`) que sirven para probar y
+administrar desde un navegador. No hay ninguna aplicación web en el camino
+principal.
 """
 
 from __future__ import annotations
@@ -81,19 +81,18 @@ async def _shutdown() -> None:
 # --------------------------------------------------------------------------
 # Modelos de petición
 # --------------------------------------------------------------------------
-class DescribeRequest(BaseModel):
+class LookRequest(BaseModel):
     image: str = Field(..., description="Imagen en base64, SIN el prefijo data:")
     deviceId: str
     prompt: str | None = None
     lang: str | None = None   # 'ca', 'es', 'en'
-    voice: str | None = None  # fuerza una voz concreta de edge-tts
-    audio: bool = True        # a False, solo devuelve el texto (más rápido)
-    # 'gemini' o 'groq'. Si no se dice nada, el de VISION_PROVIDER (gemini).
+    voice: str | None = None  # fuerza una voz concreta
+    # 'groq' o 'gemini'. Si no se dice nada, el de VISION_PROVIDER (groq).
     provider: str | None = None
     # 'piper' o 'edge'. Si no se dice nada, el de TTS_PROVIDER (piper).
     tts: str | None = None
-    # Solo para /look: 'pcm16' (lo que quiere el I2S del MAX98357A), 'mulaw'
-    # (la mitad de bytes) o 'wav' (con cabecera, para navegadores).
+    # 'pcm16' (lo que quiere el I2S del MAX98357A), 'mulaw' (la mitad de
+    # bytes), 'wav' (con cabecera, para navegadores) o 'mp3' (solo con edge).
     audioFormat: str | None = None
     sampleRate: int | None = None
     # Lado largo al que reducir la foto en el servidor. 0 desactiva; si no
@@ -219,8 +218,8 @@ def health() -> dict[str, Any]:
     }
 
 
-async def _describir(req: DescribeRequest) -> tuple[str, dict[str, str]]:
-    """La parte de visión, común a /describe y /look.
+async def _describir(req: LookRequest) -> tuple[str, dict[str, str]]:
+    """La parte de visión de /look.
 
     Devuelve el texto y unas cabeceras con el detalle de qué lo generó, para
     que /look pueda darlo sin cuerpo JSON.
@@ -236,7 +235,7 @@ async def _describir(req: DescribeRequest) -> tuple[str, dict[str, str]]:
     }
 
 
-async def _vision_paso(req: DescribeRequest) -> tuple[str, dict[str, int], str]:
+async def _vision_paso(req: LookRequest) -> tuple[str, dict[str, int], str]:
     try:
         provider = vision.resolve(req.provider)
     except ValueError as e:
@@ -300,57 +299,18 @@ async def _vision_paso(req: DescribeRequest) -> tuple[str, dict[str, int], str]:
     return description, timings, provider
 
 
-@app.post("/describe", dependencies=[Depends(require_token)])
-async def describe(req: DescribeRequest) -> dict[str, Any]:
-    lang = (req.lang or tts.DEFAULT_LANG).lower()
-    description, timings, provider = await _vision_paso(req)
-
-    result: dict[str, Any] = {
-        "text": description,
-        "lang": lang,
-        "provider": provider,
-        "model": vision.model_for(provider),
-    }
-
-    # Voz (opcional)
-    if req.audio:
-        try:
-            tts_provider = tts.effective_provider(req.tts)
-        except ValueError as e:
-            raise HTTPException(400, str(e)) from e
-
-        t0 = time.perf_counter()
-        voice = tts.voice_for(lang, req.voice, tts_provider)
-        try:
-            audio_bytes = await tts.synthesize(description, voice, tts_provider)
-        except Exception as e:
-            raise HTTPException(
-                502, f"Fallo al generar el audio: {describe_error(e)}"
-            ) from e
-        timings["tts_ms"] = int((time.perf_counter() - t0) * 1000)
-
-        result["audio"] = base64.b64encode(audio_bytes).decode("ascii")
-        # No va fijo a "mp3": Piper devuelve WAV y edge-tts, MP3.
-        result["audioFormat"] = tts.format_for(tts_provider)
-        result["voice"] = voice
-        result["tts"] = tts_provider
-
-    result["timings"] = timings
-    return result
-
-
 @app.post("/look", dependencies=[Depends(require_token)])
-async def look(req: DescribeRequest) -> StreamingResponse:
-    """Una sola petición: foto entra, audio sale, y el audio va en streaming.
+async def look(req: LookRequest) -> StreamingResponse:
+    """El endpoint principal: foto entra, audio sale, y el audio va en streaming.
 
-    Pensado para el ESP32-S3 con un MAX98357A. Frente a `/describe`:
+    Pensado para que la ESP32-S3 lo llame directamente:
 
     - El audio va en crudo, sin base64: un 33 % menos de bytes y nada que
       descodificar en el microcontrolador.
-    - Empieza a llegar en cuanto Piper genera la primera frase, así que el
+    - Empieza a llegar en cuanto el TTS genera la primera frase, así que el
       ESP32 puede sonar mientras se sintetiza el resto. Como el audio viaja
       más rápido de lo que se escucha, a partir de ahí la descarga se solapa
-      con la reproducción y deja de sumar.
+      con la reproducción y deja de sumar latencia.
     - Con `pcm16` (lo de por defecto) son muestras de 16 bits con signo tal
       como las quiere el I2S del MAX98357A: se escriben directamente, sin
       cabecera ni conversión.
@@ -359,24 +319,31 @@ async def look(req: DescribeRequest) -> StreamingResponse:
     cabeceras HTTP son ASCII), y el formato en `X-Bonsai-Rate`, `-Bits` y
     `-Channels`, para no tener que adivinar nada al configurar el I2S.
     """
-    if tts.effective_provider(req.tts) != "piper":
-        raise HTTPException(
-            400,
-            "/look necesita Piper: edge-tts devuelve MP3, que el ESP32 tendría "
-            "que descodificar. Usa /describe con \"tts\": \"edge\" si quieres esa voz.",
-        )
+    try:
+        tts_provider = tts.effective_provider(req.tts)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
 
-    formato = (req.audioFormat or "pcm16").lower()
-    if formato not in piper_tts.FORMATOS:
-        raise HTTPException(
-            400,
-            f"Formato desconocido: {formato!r}. Usa uno de: {', '.join(piper_tts.FORMATOS)}",
-        )
+    # Con edge-tts el formato no se elige: Microsoft manda MP3 y punto. Con
+    # Piper sí, porque las muestras salen del modelo y se convierten aquí.
+    if tts_provider == "edge":
+        if req.audioFormat and req.audioFormat.lower() != "mp3":
+            raise HTTPException(
+                400,
+                f"Con edge-tts el audio solo puede ser mp3, no {req.audioFormat!r}. "
+                "Para pcm16 o mulaw usa Piper, que es el de por defecto.",
+            )
+        formato = "mp3"
+    else:
+        formato = (req.audioFormat or "pcm16").lower()
+        if formato not in piper_tts.FORMATOS:
+            raise HTTPException(
+                400,
+                f"Formato desconocido: {formato!r}. Usa uno de: "
+                f"{', '.join(piper_tts.FORMATOS)}",
+            )
 
-    texto, cabeceras = await _describir(req)
-
-    voz = tts.voice_for(req.lang or tts.DEFAULT_LANG, req.voice, "piper")
-    rate = req.sampleRate or piper_tts.sample_rate_de(voz)
+    voz = tts.voice_for(req.lang or tts.DEFAULT_LANG, req.voice, tts_provider)
     if req.sampleRate and req.sampleRate not in piper_tts.SAMPLE_RATES:
         raise HTTPException(
             400,
@@ -384,28 +351,37 @@ async def look(req: DescribeRequest) -> StreamingResponse:
             f"{', '.join(str(s) for s in piper_tts.SAMPLE_RATES)}",
         )
 
-    bits = 8 if formato == "mulaw" else 16
+    texto, cabeceras = await _describir(req)
+
+    if formato == "mp3":
+        rate, bits = 24000, 16          # lo que devuelve edge-tts
+        trozos = tts.stream(texto, voz, "edge")
+    else:
+        rate = req.sampleRate or piper_tts.sample_rate_de(voz)
+        bits = 8 if formato == "mulaw" else 16
+        trozos = piper_tts.stream_raw(texto, voz, formato, rate)
+
     cabeceras.update({
         "X-Bonsai-Text": base64.b64encode(texto.encode()).decode("ascii"),
+        "X-Bonsai-Tts": tts_provider,
         "X-Bonsai-Format": formato,
         "X-Bonsai-Rate": str(rate),
         "X-Bonsai-Bits": str(bits),
         "X-Bonsai-Channels": "1",
         "X-Bonsai-Voice": voz,
         # Sin esto el navegador no deja leer las X-Bonsai-* desde JavaScript.
-        "Access-Control-Expose-Headers": "X-Bonsai-Text, X-Bonsai-Format, "
-        "X-Bonsai-Rate, X-Bonsai-Bits, X-Bonsai-Channels, X-Bonsai-Voice, "
-        "X-Bonsai-Provider, X-Bonsai-Model, X-Bonsai-Vision-Ms, X-Bonsai-Resize-Ms",
+        "Access-Control-Expose-Headers": "X-Bonsai-Text, X-Bonsai-Tts, "
+        "X-Bonsai-Format, X-Bonsai-Rate, X-Bonsai-Bits, X-Bonsai-Channels, "
+        "X-Bonsai-Voice, X-Bonsai-Provider, X-Bonsai-Model, "
+        "X-Bonsai-Vision-Ms, X-Bonsai-Resize-Ms",
     })
 
-    trozos = piper_tts.stream_raw(texto, voz, formato, rate)
-
-    # El primer trozo se pide antes de responder: si Piper falla, todavía
+    # El primer trozo se pide antes de responder: si el TTS falla, todavía
     # estamos a tiempo de devolver un error de verdad y no un 200 vacío.
     try:
         primero = await anext(trozos)
     except StopAsyncIteration:
-        raise HTTPException(502, "Piper no devolvió audio.") from None
+        raise HTTPException(502, f"{tts_provider} no devolvió audio.") from None
     except Exception as e:
         raise HTTPException(
             502, f"Fallo al generar el audio: {describe_error(e)}"
@@ -420,7 +396,8 @@ async def look(req: DescribeRequest) -> StreamingResponse:
 
     tipos = {"pcm16": f"audio/L16;rate={rate};channels=1",
              "mulaw": f"audio/basic;rate={rate}",
-             "wav": "audio/wav"}
+             "wav": "audio/wav",
+             "mp3": "audio/mpeg"}
     return StreamingResponse(cuerpo(), media_type=tipos[formato], headers=cabeceras)
 
 

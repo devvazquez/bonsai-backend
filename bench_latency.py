@@ -149,17 +149,24 @@ def variantes(path: str, tamanos: tuple[int, ...]) -> list[dict]:
 
 
 # --------------------------------------------------------------------------
-# Medición contra el servidor (/describe)
+# Medición contra el servidor (/look)
 # --------------------------------------------------------------------------
 def medir_servidor(
-    cliente: httpx.Client, provider: str, var: dict, audio: bool, prompt: str | None
+    cliente: httpx.Client, provider: str, var: dict, prompt: str | None
 ) -> dict:
+    """Mide /look, que es el único endpoint de imagen que hay.
+
+    Lo interesante aquí es el **primer byte de audio**: es cuando el ESP32
+    podría empezar a sonar. El total importa mucho menos, porque a partir del
+    primer byte la descarga se solapa con la reproducción.
+    """
     cuerpo = {
         "deviceId": DEVICE_ID,
         "image": var["b64"],
         "lang": "es",
-        "audio": audio,
         "provider": provider,
+        "audioFormat": "pcm16",
+        "sampleRate": 16000,
     }
     if prompt:
         cuerpo["prompt"] = prompt
@@ -169,30 +176,42 @@ def medir_servidor(
         cabeceras["X-API-Token"] = API_TOKEN
 
     t0 = time.perf_counter()
+    primero_ms, n = None, 0
     try:
-        r = cliente.post(f"{API_URL}/describe", json=cuerpo, headers=cabeceras)
+        with cliente.stream(
+            "POST", f"{API_URL}/look", json=cuerpo, headers=cabeceras
+        ) as r:
+            if r.status_code == 429:
+                r.read()
+                espera = r.headers.get("Retry-After", "?")
+                return {"error": f"429 cuota agotada (Retry-After: {espera}s)",
+                        "parar": True}
+            if r.status_code >= 400:
+                r.read()
+                return {"error": f"HTTP {r.status_code}: {r.text[:200]}"}
+            cab = r.headers
+            for trozo in r.iter_bytes():
+                if trozo:
+                    if primero_ms is None:
+                        primero_ms = (time.perf_counter() - t0) * 1000
+                    n += len(trozo)
     except Exception as e:
         return {"error": f"{type(e).__name__}: {e}"}
     total_ms = (time.perf_counter() - t0) * 1000
 
-    if r.status_code == 429:
-        espera = r.headers.get("Retry-After", "?")
-        return {"error": f"429 cuota agotada (Retry-After: {espera}s)", "parar": True}
-    if r.status_code >= 400:
-        return {"error": f"HTTP {r.status_code}: {r.text[:200]}"}
-
-    d = r.json()
-    t = d.get("timings") or {}
-    servidor = sum(v for v in t.values() if isinstance(v, int))
+    vision = int(cab.get("x-bonsai-vision-ms", 0))
+    reducir = int(cab.get("x-bonsai-resize-ms", 0))
     return {
         "total_ms": total_ms,
-        "vision_ms": t.get("vision_ms", 0),
-        "tts_ms": t.get("tts_ms", 0),
-        "memoria_ms": t.get("memoria_ms", 0),
-        # Lo que no es el servidor es subir la imagen y bajar el audio.
-        "red_ms": max(0.0, total_ms - servidor),
-        "texto": d.get("text", ""),
-        "modelo": d.get("model", "?"),
+        "primer_audio_ms": primero_ms or total_ms,
+        "vision_ms": vision,
+        "reducir_ms": reducir,
+        # Lo que no es visión ni reducir es sintetizar y mover los bytes.
+        "audio_ms": max(0.0, (primero_ms or total_ms) - vision - reducir),
+        "bytes": n,
+        "texto": base64.b64decode(cab.get("x-bonsai-text", "")).decode(
+            "utf-8", "replace"),
+        "modelo": cab.get("x-bonsai-model", "?"),
     }
 
 
@@ -461,7 +480,6 @@ def main() -> int:
     p.add_argument("--image", help="Ruta de la imagen de prueba")
     p.add_argument("--mode", default="server", choices=["server", "ttft"])
     p.add_argument("--repeat", type=int, default=1, help="Repeticiones (por defecto 1)")
-    p.add_argument("--audio", action="store_true", help="Incluir el TTS en la medición")
     p.add_argument("--prompt", help="Pregunta concreta en vez de la descripción")
     p.add_argument("--sizes", default=",".join(str(t) for t in TAMANOS))
     p.add_argument("--only-small", action="store_true",
@@ -529,7 +547,7 @@ def main() -> int:
                     if args.mode == "ttft":
                         r = medir_ttft(prov, v)
                     else:
-                        r = medir_servidor(cliente, prov, v, args.audio, args.prompt)
+                        r = medir_servidor(cliente, prov, v, args.prompt)
                     if "error" in r:
                         print(f"⚠️  {prov} / {v['nombre']}: {r['error']}")
                         if r.get("parar"):
@@ -564,21 +582,17 @@ def main() -> int:
               f"adelantarían\nhasta ~{ahorro:.0f} ms en {peor[0][0]} / {peor[0][1]}.")
     else:
         print("LATENCIA POR PARTES (medianas)")
-        cab = f"{'proveedor / imagen':<38} {'total':>9} {'visión':>9} {'red':>8}"
-        if args.audio:
-            cab += f" {'tts':>8}"
-        print(cab)
-        print("-" * 78)
+        print(f"{'proveedor / imagen':<34} {'reducir':>9} {'visión':>9} "
+              f"{'audio':>9} {'1er byte':>10} {'KB':>7}")
+        print("-" * 82)
         for (prov, nombre), ms in utiles.items():
-            fila = (f"{prov + ' / ' + nombre:<38} {med(ms,'total_ms'):>8.0f}ms "
-                    f"{med(ms,'vision_ms'):>8.0f}ms {med(ms,'red_ms'):>7.0f}ms")
-            if args.audio:
-                fila += f" {med(ms,'tts_ms'):>7.0f}ms"
-            print(fila)
-        print("-" * 78)
-        mejor = min(utiles.items(), key=lambda kv: med(kv[1], "total_ms"))
-        print(f"\nMás rápido: {mejor[0][0]} / {mejor[0][1]} "
-              f"({med(mejor[1],'total_ms'):.0f} ms)")
+            print(f"{prov + ' / ' + nombre:<34} {med(ms,'reducir_ms'):>8.0f}ms "
+                  f"{med(ms,'vision_ms'):>8.0f}ms {med(ms,'audio_ms'):>8.0f}ms "
+                  f"{med(ms,'primer_audio_ms'):>9.0f}ms {med(ms,'bytes')/1024:>7.0f}")
+        print("-" * 82)
+        mejor = min(utiles.items(), key=lambda kv: med(kv[1], "primer_audio_ms"))
+        print(f"\nMás rápido al primer byte de audio: {mejor[0][0]} / {mejor[0][1]} "
+              f"({med(mejor[1],'primer_audio_ms'):.0f} ms)")
         for v in vars_:
             if v["resize_ms"]:
                 print(f"Reducir a {v['nombre']}: {v['resize_ms']:.0f} ms de CPU "

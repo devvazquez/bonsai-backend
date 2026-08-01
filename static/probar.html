@@ -80,10 +80,6 @@
     <option value="edge">edge-tts (Microsoft, ~1,3 s)</option>
   </select>
   <div class="check">
-    <input type="checkbox" id="audio" checked>
-    <label for="audio" style="margin:0;text-transform:none;letter-spacing:0;font-size:.9rem;opacity:1">Generar voz</label>
-  </div>
-  <div class="check">
     <input type="checkbox" id="reducir" checked>
     <label for="reducir" style="margin:0;text-transform:none;letter-spacing:0;font-size:.9rem;opacity:1">Reducir a 896 px antes de subir</label>
   </div>
@@ -113,7 +109,7 @@ const API = location.origin;
 $("btn").onclick = () => $("file").click();
 
 // Recuerda los ajustes entre fotos: probar desde el móvil es repetir mucho.
-for (const id of ["prov", "lang", "tts", "token", "audio", "reducir"]) {
+for (const id of ["prov", "lang", "tts", "token", "reducir"]) {
   const el = $(id), guardado = localStorage.getItem("bonsai." + id);
   if (guardado !== null) el[el.type === "checkbox" ? "checked" : "value"] = guardado === "true" ? true : guardado === "false" ? false : guardado;
   el.onchange = () => localStorage.setItem("bonsai." + id, el.type === "checkbox" ? el.checked : el.value);
@@ -157,7 +153,8 @@ $("file").onchange = async e => {
       deviceId: "movil",
       image: prep.b64,
       lang: $("lang").value,
-      audio: $("audio").checked,
+      // wav porque el navegador lo reproduce tal cual. El ESP32 pide pcm16.
+      audioFormat: "wav",
     };
     if ($("prov").value) cuerpo.provider = $("prov").value;
     if ($("tts").value) cuerpo.tts = $("tts").value;
@@ -167,10 +164,9 @@ $("file").onchange = async e => {
     if ($("token").value.trim()) cab["X-API-Token"] = $("token").value.trim();
 
     const tReq = performance.now();
-    const r = await fetch(API + "/describe", {
+    const r = await fetch(API + "/look", {
       method: "POST", headers: cab, body: JSON.stringify(cuerpo),
     });
-    const msReq = performance.now() - tReq;
 
     if (!r.ok) {
       const cuerpoErr = await r.text();
@@ -183,26 +179,43 @@ $("file").onchange = async e => {
       throw new Error(msg);
     }
 
-    const d = await r.json();
-    const total = performance.now() - t0;
+    // El texto llega en una cabecera, no en el cuerpo: el cuerpo es el audio.
+    // Va en base64 porque las cabeceras HTTP solo admiten ASCII.
+    const texto = new TextDecoder().decode(
+      Uint8Array.from(atob(r.headers.get("X-Bonsai-Text")), c => c.charCodeAt(0)));
+    const visionMs = Number(r.headers.get("X-Bonsai-Vision-Ms") || 0);
+    const resizeMs = Number(r.headers.get("X-Bonsai-Resize-Ms") || 0);
+    const formato = r.headers.get("X-Bonsai-Format") || "wav";
 
+    // El primer byte es lo que importa: es cuando el ESP32 podría empezar a
+    // sonar. Se mide leyendo el stream a mano en vez de esperar el blob.
+    const lector = r.body.getReader();
+    const trozos = []; let primerByte = null, total = 0;
+    while (true) {
+      const { done, value } = await lector.read();
+      if (done) break;
+      if (primerByte === null) primerByte = performance.now() - tReq;
+      trozos.push(value); total += value.length;
+    }
+    const msReq = performance.now() - tReq;
+    const blob = new Blob(trozos, { type: formato === "mp3" ? "audio/mpeg" : "audio/wav" });
+
+    const totalMs = performance.now() - t0;
     const filas = [
       ["Preparar la imagen", `${tPrep.toFixed(0)} ms`],
-      ["Subida + servidor", `${msReq.toFixed(0)} ms`],
-      ["Visión", `${d.timings?.vision_ms ?? "—"} ms`],
+      ["Reducir (servidor)", `${resizeMs} ms`],
+      ["Visión", `${visionMs} ms`],
+      ["Primer byte de audio", `${primerByte === null ? "—" : primerByte.toFixed(0) + " ms"}`],
+      ["Audio completo", `${msReq.toFixed(0)} ms`],
+      ["Enviado / recibido", `${(prep.bytes / 1024).toFixed(0)} KB / ${(total / 1024).toFixed(0)} KB`],
+      ["Modelo", `${r.headers.get("X-Bonsai-Provider")} · ${r.headers.get("X-Bonsai-Model")}`],
+      ["Voz", `${r.headers.get("X-Bonsai-Tts")} · ${r.headers.get("X-Bonsai-Voice")}`],
+      ["TOTAL", `${totalMs.toFixed(0)} ms`],
     ];
-    if (d.timings?.tts_ms) filas.push([`Voz (${d.tts || "?"})`, `${d.timings.tts_ms} ms`]);
-    filas.push(
-      ["Tamaño enviado", `${(prep.bytes / 1024).toFixed(0)} KB${prep.w ? ` (${prep.w}×${prep.h})` : ""}`],
-      ["Modelo", `${d.provider || "?"} · ${d.model || "?"}`],
-      ["TOTAL", `${total.toFixed(0)} ms`],
-    );
 
-    // El formato lo dice el servidor: Piper devuelve WAV y edge-tts, MP3.
-    const tipo = d.audioFormat === "wav" ? "audio/wav" : "audio/mpeg";
     salida.innerHTML = `<div class="card">
-      <p class="texto">${d.text.replace(/[<&]/g, c => ({"<":"&lt;","&":"&amp;"}[c]))}</p>
-      ${d.audio ? `<audio controls autoplay src="data:${tipo};base64,${d.audio}"></audio>` : ""}
+      <p class="texto">${texto.replace(/[<&]/g, c => ({"<":"&lt;","&":"&amp;"}[c]))}</p>
+      <audio controls autoplay src="${URL.createObjectURL(blob)}"></audio>
     </div>
     <div class="card"><table>${
       filas.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join("")

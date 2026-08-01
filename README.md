@@ -21,10 +21,13 @@ flowchart LR
     A -- I2S --> F["MAX98357A"]
 ```
 
-De moment **no hi ha cap aplicació web**: les ulleres parlen directament amb el
-backend. El que sí que hi ha són dues pàgines de servei que el propi servidor
-serveix, per provar-lo i per administrar-lo des del navegador: `/provar` i
-`/memoria`.
+**L'ESP32 crida l'API directament.** No hi ha cap aplicació web al mig, i el
+backend no n'espera cap: si algun dia n'hi ha una, serà per configurar el
+dispositiu de tant en tant, no per fer funcionar les ulleres. Per això només hi
+ha un endpoint d'imatge, `/look`, i està fet a mida del microcontrolador.
+
+El que sí que hi ha són pàgines de servei que serveix el mateix backend, per
+provar-lo i administrar-lo des d'un navegador: `/provar` i `/memoria`.
 
 A cada petició el servidor afegeix al prompt la data d'avui i els records
 guardats d'aquell dispositiu, perquè les descripcions tinguin context.
@@ -33,8 +36,9 @@ Les respostes són **d'1 o 2 frases** a propòsit: tot el que diu el model s'ha
 d'escoltar després, així que cada frase de més són segons d'espera. Si et cal
 més detall, es demana amb el camp `prompt`.
 
-- **Visió**: dos proveïdors intercanviables, **Gemini** (per defecte, quota
-  folgada) i **Groq** (més ràpid: 552 ms mesurats, però 8.000 tokens/minut).
+- **Visió**: dos proveïdors intercanviables, **Groq** (per defecte: 552 ms
+   mesurats i molt regular, però 8.000 tokens/minut) i **Gemini** (més lent,
+   quota molt més folgada, va bé per desenvolupar).
 - **Veu**: **Piper** en local (per defecte), veu catalana `ca_ES-upc_ona-medium`
   de la UPC, 205 ms i sense dependre de ningú. edge-tts continua disponible.
 - **Memòria**: SQLite, un fitxer, sense serveis externs.
@@ -49,7 +53,7 @@ estimats; el desglossament és a [Latència](#latència-on-sen-va-el-temps).
 ## Índex
 
 1. [Provar-ho al teu ordinador](#1-provar-ho-al-teu-ordinador)
-2. [Les dues pàgines web](#2-les-dues-pàgines-web)
+2. [Les pàgines web](#2-les-pàgines-web)
 3. [Terminal de proves](#3-terminal-de-proves)
 4. [API](#4-api)
 5. [Desplegar-ho en un VPS](#5-desplegar-ho-en-un-vps)
@@ -63,8 +67,9 @@ estimats; el desglossament és a [Latència](#latència-on-sen-va-el-temps).
 
 No cal Docker ni servidor: funciona sencer en local. Només necessites **Python
 3.11 o superior** i una clau d'API gratuïta de
-[aistudio.google.com/apikey](https://aistudio.google.com/apikey) (o de
-[console.groq.com](https://console.groq.com) si prefereixes Groq).
+[console.groq.com](https://console.groq.com) (o de
+[aistudio.google.com/apikey](https://aistudio.google.com/apikey) si prefereixes
+Gemini, que té la quota més folgada per desenvolupar).
 
 La veu **no** necessita cap clau: Piper sintetitza en local. El primer cop que
 arrenca es baixa sol el model de la veu catalana (63 MB) a `voices/`.
@@ -78,7 +83,7 @@ cd bonsai-backend
 ```
 
 El primer cop l'script crea el `.env` i s'atura perquè hi posis la teva
-`GEMINI_API_KEY`. El tornes a executar i ja arrenca.
+`GROQ_API_KEY`. El tornes a executar i ja arrenca.
 
 > Si el PowerShell es queixa que no pot executar scripts:
 > `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`
@@ -115,7 +120,7 @@ es crea a `./data/bonsai.db`.
 python -m venv .venv
 .venv/Scripts/activate        # Windows:  .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-cp .env.example .env          # i posa-hi la teva GEMINI_API_KEY
+cp .env.example .env          # i posa-hi la teva GROQ_API_KEY
 uvicorn main:app --host 127.0.0.1 --port 8080 --reload
 ```
 
@@ -125,7 +130,7 @@ variables del `.env` a mà (`set -a; . ./.env; set +a`).
 
 ---
 
-## 2. Les dues pàgines web
+## 2. Les pàgines web
 
 Les serveix el mateix backend, així que no hi ha CORS ni cal muntar res a part:
 n'hi ha prou d'obrir la IP del servidor al navegador.
@@ -155,6 +160,37 @@ navegador. A dalt a la dreta hi ha l'estat de la base de dades: quants records,
 quants dispositius, quant ocupa i el límit per dispositiu.
 
 Si el servidor demana token, el demana un sol cop i el desa al navegador.
+
+### `sqlite-web` — administrar la base de dades a fons
+
+`/memoria` cobreix el dia a dia sense tocar SQL, però per a qualsevol altra
+cosa (crear taules, afegir columnes, índexs, consultes a mà, importar o
+exportar) hi ha **[sqlite-web](https://github.com/coleifer/sqlite-web)**, que
+ja està fet i està molt més provat que res que poguéssim escriure aquí. Ve com
+un perfil de Docker Compose que **només s'aixeca quan cal**:
+
+```bash
+docker compose --profile admin up -d
+```
+
+Escolta a `127.0.0.1:8081` i **mai s'exposa a internet**, perquè és accés SQL
+complet al fitxer. Per arribar-hi des del teu portàtil, túnel SSH:
+
+```bash
+ssh -L 8081:127.0.0.1:8081 usuari@la-vps
+```
+
+i obre <http://127.0.0.1:8081>. A més del túnel demana la contrasenya de
+`SQLITE_WEB_PASSWORD`, per si algú altre entra a la màquina.
+
+Quan acabis, `docker compose --profile admin down` i tornes a deixar-ho tancat.
+
+| Per a què | Fes servir |
+| --- | --- |
+| Veure i editar records del dia a dia | `/memoria` |
+| Crear taules, columnes, índexs | sqlite-web |
+| Consultes SQL a mà | sqlite-web |
+| Importar o exportar CSV/JSON | sqlite-web |
 
 ---
 
@@ -196,8 +232,7 @@ El repositori inclou una `image.png` d'exemple per provar sense buscar fotos.
 
 | Mètode | Ruta | Descripció |
 | --- | --- | --- |
-| `POST` | `/describe` | Imatge → text + àudio, en JSON. Per a navegadors |
-| `POST` | `/look` | El mateix per a l'ESP32: àudio en cru i en streaming, llest per a l'I2S |
+| `POST` | `/look` | **L'endpoint principal**: foto → àudio en cru i en streaming |
 | `POST` | `/speak?text=...&lang=ca` | Només text a veu. Torna l'àudio en cru |
 | `GET` | `/memory` | Tots els dispositius amb records, i l'estat de la base de dades |
 | `POST` | `/memory` | `{deviceId, fact}` — desa un record |
@@ -214,7 +249,12 @@ Les dues pàgines es serveixen sense token perquè són HTML, no dades: el que h
 ha al darrere sí que va protegit, perquè demanen les dades a l'API amb la
 capçalera `X-API-Token`.
 
-### `POST /describe`
+### `POST /look`
+
+L'únic endpoint d'imatge que hi ha. Abans n'hi havia dos, `/describe` (JSON amb
+l'àudio en base64) i `/look`, però `/describe` només tenia sentit si hi hagués
+una aplicació web al mig, i no n'hi ha: l'ESP32 crida l'API directament.
+Mantenir-ne dos era mantenir dos camins per a la mateixa cosa.
 
 ```jsonc
 {
@@ -222,32 +262,34 @@ capçalera `X-API-Token`.
   "deviceId": "bonsai-01",
   "prompt": "Què diu el cartell?",     // opcional; per defecte, descripció general
   "lang": "ca",                        // opcional: ca | es | en
-  "voice": "ca_ES-upc_ona-medium",     // opcional: força una veu concreta
-  "audio": true,                       // a false torna només text (molt més ràpid)
-  "provider": "gemini",                // opcional: gemini | groq. Per defecte, VISION_PROVIDER
+  "provider": "groq",                  // opcional: groq | gemini. Per defecte, VISION_PROVIDER
   "tts": "piper",                      // opcional: piper | edge. Per defecte, TTS_PROVIDER
+  "audioFormat": "pcm16",              // pcm16 | mulaw | wav, o mp3 amb edge
+  "sampleRate": 16000,                 // 8000 | 16000 | 22050
+  "voice": "ca_ES-upc_ona-medium",     // opcional: força una veu concreta
   "maxSide": 896                       // opcional: 0 desactiva la reducció al servidor
 }
 ```
 
-Resposta:
+**El cos de la resposta és l'àudio**, en cru i en streaming. El text i tot el
+context van a capçaleres, perquè el cos no s'ha de parsejar:
 
-```jsonc
-{
-  "text": "Estàs en una plaça empedrada amb edificis antics i llums de carrer enceses.",
-  "lang": "ca",
-  "provider": "gemini",
-  "model": "gemini-3.1-flash-lite",
-  "audio": "<àudio en base64>",
-  "audioFormat": "wav",                // wav amb Piper, mp3 amb edge-tts: no ho donis per fet
-  "tts": "piper",
-  "voice": "ca_ES-upc_ona-medium",
-  "timings": { "memoria_ms": 0, "vision_ms": 784, "tts_ms": 362 }
-}
+```
+X-Bonsai-Text: <el text, UTF-8 en base64>
+X-Bonsai-Provider: groq        X-Bonsai-Model: qwen/qwen3.6-27b
+X-Bonsai-Tts: piper            X-Bonsai-Voice: ca_ES-upc_ona-medium
+X-Bonsai-Format: pcm16         X-Bonsai-Rate: 16000
+X-Bonsai-Bits: 16              X-Bonsai-Channels: 1
+X-Bonsai-Vision-Ms: 552        X-Bonsai-Resize-Ms: 192
 ```
 
-`timings` ve a totes les respostes: és la manera ràpida de veure en quina etapa
-se'n va el temps sense tocar els logs.
+El text va en base64 perquè les capçaleres HTTP només admeten ASCII i les
+respostes porten accents.
+
+Des d'un navegador, demana `"audioFormat": "wav"`: arriba amb capçalera i es
+pot posar directament en un `<audio>`. Des de l'ESP32, `pcm16`, que és el que
+vol l'I2S sense conversió. Amb `"tts": "edge"` el format només pot ser `mp3`,
+perquè és el que dóna Microsoft.
 
 ### Triar el proveïdor de visió
 
@@ -256,8 +298,8 @@ N'hi ha dos, amb la mateixa interfície, i es canvia per petició amb el camp
 
 | Proveïdor | Model per defecte | Capa gratuïta | Per a què |
 | --- | --- | --- | --- |
-| `gemini` (per defecte) | `gemini-3.1-flash-lite` | 250.000 tokens/min, 1.500 peticions/dia | El del dia a dia: la quota dóna per desenvolupar de debò |
-| `groq` | `qwen/qwen3.6-27b` | 8.000 tokens/min, 200.000 tokens/dia | Més ràpid i molt més regular, però la quota s'esgota de seguida |
+| `groq` (per defecte) | `qwen/qwen3.6-27b` | 8.000 tokens/min, 200.000 tokens/dia | El més ràpid i el més regular. La quota s'esgota de seguida |
+| `gemini` | `gemini-3.1-flash-lite` | 250.000 tokens/min, 1.500 peticions/dia | Més lent, però la quota dóna per desenvolupar de debò |
 
 El límit de Groq és **per organització, no per clau d'API**: crear una clau nova
 no reinicia el comptador.
@@ -302,7 +344,7 @@ Si Piper no està disponible (falta el model, o la llibreria), el servidor **no
 es queda mut**: fa servir edge-tts i ho diu a `/health`, a `tts.active` i
 `tts.piper.error`. L'apedaçament és visible expressament.
 
-### Errors de `/describe`
+### Errors de `/look`
 
 | Codi | Vol dir | Què fer |
 | --- | --- | --- |
@@ -355,7 +397,7 @@ nano .env
 ```
 
 ```ini
-GEMINI_API_KEY=la_clau_real_de_gemini
+GROQ_API_KEY=la_clau_real_de_groq
 BONSAI_API_TOKEN=el-token-que-acabes-de-generar
 BONSAI_DOMAIN=bonsai.eldomini.com
 ```
@@ -421,10 +463,10 @@ Ha de respondre:
 {
   "ok": true,
   "authRequired": true,
-  "defaultProvider": "gemini",
+  "defaultProvider": "groq",
   "providers": {
-    "gemini": { "model": "gemini-3.1-flash-lite", "keyConfigured": true },
-    "groq":   { "model": "qwen/qwen3.6-27b",      "keyConfigured": false }
+    "groq":   { "model": "qwen/qwen3.6-27b",      "keyConfigured": true },
+    "gemini": { "model": "gemini-3.1-flash-lite", "keyConfigured": false }
   },
   "tts": {
     "configured": "piper",
@@ -463,6 +505,9 @@ docker compose logs -f bonsai
 docker compose cp bonsai:/data/bonsai.db ./backup-$(date +%F).db
 ```
 
+**Administrar la base de dades**: `docker compose --profile admin up -d` aixeca
+sqlite-web a `127.0.0.1:8081` (veure la secció 2). No l'exposis mai a internet.
+
 **Consum**: compta **1 GB de RAM**. El Piper en fa servir uns 210 MB ell sol
 amb el model carregat, i la resta se'n va en el contenidor i el Caddy. Amb
 512 MB va molt just. No fa servir GPU, i la visió és remota; qui treballa de
@@ -476,10 +521,9 @@ permeten atendre més peticions alhora.
 
 ## 6. Usar-ho des de l'ESP32
 
-`/describe` està pensat per a navegadors: torna JSON amb l'àudio en base64, que
-és un 33 % més de bytes i obliga a descodificar al microcontrolador. Per a
-l'ESP32-S3 amb un MAX98357A hi ha **`/look`**, que fa el mateix en **una sola
-petició** però tornant l'àudio en cru i **en streaming**.
+L'ESP32 crida `/look` directament, sense res al mig. En **una sola petició**
+envia la foto i rep l'àudio en cru i **en streaming**, sense base64 ni res que
+descodificar al microcontrolador.
 
 ```jsonc
 POST /look
@@ -524,9 +568,9 @@ per a navegadors.
 `/look` exigeix Piper (torna un 400 amb `"tts": "edge"`): edge-tts dóna MP3 i la
 idea és justament no haver de descodificar res.
 
-**No separis `/describe` i `/speak` per guanyar temps**: són dos viatges d'anada
-i tornada i surt pitjor. El que es vol (evitar el base64 i sonar abans) ho dóna
-`/look` en una sola petició.
+**No separis la visió i la veu en dues crides per guanyar temps**: són dos
+viatges d'anada i tornada i surt pitjor. El que es vol (evitar el base64 i
+sonar abans) ho dóna `/look` en una sola petició.
 
 ### Com configurar la càmera (OV3660)
 
@@ -596,9 +640,9 @@ el costat del dispositiu.
 
 | Variable | Per defecte | Per a què serveix |
 | --- | --- | --- |
-| `VISION_PROVIDER` | `gemini` | Proveïdor de visió: `gemini` o `groq` |
-| `GEMINI_API_KEY` | — | **Obligatòria** amb el proveïdor per defecte. [aistudio.google.com/apikey](https://aistudio.google.com/apikey) |
-| `GROQ_API_KEY` | — | Obligatòria només si fas servir `groq` |
+| `VISION_PROVIDER` | `groq` | Proveïdor de visió: `groq` o `gemini` |
+| `GROQ_API_KEY` | — | **Obligatòria** amb el proveïdor per defecte. [console.groq.com](https://console.groq.com) |
+| `GEMINI_API_KEY` | — | Obligatòria només si fas servir `gemini` |
 | `TTS_PROVIDER` | `piper` | Motor de veu: `piper` (local, ràpid) o `edge` (Microsoft, millor veu) |
 | `PIPER_VOICES_DIR` | `./voices` | On viuen els models `.onnx` del Piper |
 | `BONSAI_API_TOKEN` | buit | Protegeix l'API. Buit = sense autenticació |
@@ -609,6 +653,7 @@ el costat del dispositiu.
 | `GROQ_VISION_MODEL` | `qwen/qwen3.6-27b` | Per si Groq el reanomena |
 | `IMAGE_MAX_SIDE` | `896` | Costat llarg al qual el servidor redueix la foto. `0` ho desactiva |
 | `IMAGE_RESIZE_FOR` | `gemini,groq` | A quins proveïdors se'ls redueix |
+| `SQLITE_WEB_PASSWORD` | — | Contrasenya de l'administrador de la base de dades (perfil `admin`) |
 | `IMAGE_JPEG_QUALITY` | `80` | Qualitat del JPEG en reduir |
 | `BONSAI_DB_PATH` | `/data/bonsai.db` o `./data/bonsai.db` | Ruta de la base de dades de records |
 | `BONSAI_DOMAIN` | — | Domini per a l'HTTPS automàtic (només amb el perfil `caddy`) |
@@ -894,7 +939,7 @@ defecte).
 
 ### Altres apunts
 
-- **Model de Groq**: Groq reanomena i retira models sovint. Si `/describe`
+- **Model de Groq**: Groq reanomena i retira models sovint. Si `/look`
   comença a donar error 502, comprova el nom vigent a
   <https://console.groq.com/docs/models> i canvia'l amb `GROQ_VISION_MODEL`,
   sense tocar el codi.

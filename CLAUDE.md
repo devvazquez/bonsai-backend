@@ -2,13 +2,16 @@
 
 ## Proveedor de visión: hay dos
 
-`vision.py` es la capa común y elige entre `gemini_vision.py` (por defecto) y
-`groq_vision.py`. Se cambia con `VISION_PROVIDER` o, por petición, con el campo
-`provider` de `/describe`.
+`vision.py` es la capa común y elige entre `groq_vision.py` (por defecto) y
+`gemini_vision.py`. Se cambia con `VISION_PROVIDER` o, por petición, con el campo
+`provider` de `/look`.
 
-Gemini es el de por defecto por la cuota: 250.000 tokens/minuto y 1.500
-peticiones/día, frente a los 8.000/minuto y 200.000/día de Groq. Groq sigue
-siendo el más rápido, pero con su cuota no se puede ni desarrollar.
+**Groq es el de por defecto** porque es el más rápido y sobre todo el más regular: 552 ms
+de visión (551-554) frente a los 844 ms de Gemini (649-937), con la misma imagen.
+
+Su pega es la cuota: 8.000 tokens/minuto son unas 3 fotos por minuto a 896 px. Para
+desarrollar sin pelearse con el 429, `VISION_PROVIDER=gemini` o `"provider":"gemini"` en
+la petición.
 
 Antes de medir o probar cualquier cosa, `python bench_latency.py --selftest`:
 comprueba el código sin gastar un solo token.
@@ -52,10 +55,8 @@ Se ven en vivo en las cabeceras `x-ratelimit-*` de cualquier respuesta de Groq.
 2. **Una sola llamada por prueba**, no un barrido de idiomas y prompts. Cada variante es
    otra factura de tokens. `bench_latency.py` obliga a esto: sin `--yes` no llama a
    nadie, y aborta si el plan pasa de 20.000 tokens estimados.
-3. **`"audio": false`** cuando solo estés comprobando la visión: ahorra el TTS (que es
-   gratis, pero también 1-3 s de espera).
-4. Para probar TTS, memoria o `/health` **no hace falta Groq**: usa esos endpoints y no
-   toques `/describe`.
+3. Para probar TTS, memoria o `/health` **no hace falta Groq**: usa `/speak`, `/memory` y
+   `/health`, que no tocan el proveedor de visión.
 
 Medido con la imagen reducida a 896 px: visión ~1,1 s. Con la original de 3,1 MB: ~3,7 s.
 Reducir es más rápido *y* más barato.
@@ -121,11 +122,16 @@ que engañe porque sintetiza de cero cada vez. Una petición completa con foto p
 Ojo: **Piper devuelve WAV y edge-tts MP3**. El formato va en `audioFormat`, no lo des por
 hecho. El WAV pesa 247 KB frente a 66 KB de la misma frase en MP3, que importa por BLE.
 
-## Para la ESP32-S3 se usa `/look`, no `/describe`
+## Solo hay un endpoint de imagen: `/look`
 
-`/describe` mete el audio en base64 dentro del JSON: un 33 % más de bytes y algo que
-descodificar en el microcontrolador. `/look` hace lo mismo en una sola petición pero
-devuelve las muestras en crudo y en streaming, que es lo que quiere el I2S del MAX98357A.
+`/describe` se eliminó. Devolvía JSON con el audio en base64 (33 % más de bytes y algo que
+descodificar) y solo tenía sentido si hubiera una app web en medio. No la hay: la ESP32
+llama a la API directamente, y si algún día hay app será para configurar el dispositivo de
+vez en cuando, no para que funcionen las gafas.
+
+`/look` devuelve las muestras en crudo y en streaming, que es lo que quiere el I2S del
+MAX98357A, y el texto va en la cabecera `X-Bonsai-Text` (base64, porque las cabeceras son
+ASCII). Con `"tts":"edge"` devuelve MP3; con Piper, `pcm16`, `mulaw` o `wav`.
 
 Lo importante del streaming: el primer byte de audio sale a los 1.024-1.463 ms (casi todo
 es la visión) y a partir de ahí el audio llega más rápido de lo que se escucha, así que la
@@ -137,9 +143,9 @@ rápido que el tiempo real:
 - `mulaw` 16000 Hz: 16,0 KB/s
 - `mulaw`  8000 Hz:  8,0 KB/s  ← si el WiFi va justo
 
-No separes `/describe` y `/speak` para ganar tiempo: son dos viajes de ida y vuelta y sale
-peor. Yo lo sugerí una vez y estaba equivocado; lo que se quería (evitar el base64 y sonar
-antes) lo da `/look` en una sola petición.
+No separes la visión y la voz en dos llamadas para ganar tiempo: son dos viajes de ida y
+vuelta y sale peor. Yo lo sugerí una vez y estaba equivocado; lo que se quería (evitar el
+base64 y sonar antes) lo da `/look` en una sola petición.
 
 Descartado: el **TTS de Gemini**. Soporta catalán y suena bien, pero 5.354, 7.727 y
 11.320 ms medidos. Inservible aquí.
@@ -170,3 +176,14 @@ Ojo con las licencias:
 - v2 multiacento (balear, valencià, nord-occidental): **no comercial**, hay que licenciar
   con los locutores a través del BSC y La Fresca Produccions.
 - Todas las v1 de projecte-aina y el StyleTTS2 catalán: **GPL-3.0**.
+
+## Administrar la base de datos
+
+Dos herramientas, cada una para lo suyo:
+
+- **`/memoria`**: página propia, para el día a día. Ver, añadir, editar y borrar recuerdos
+  por dispositivo, sin tocar SQL. Es la que hay que usar normalmente.
+- **`sqlite-web`** (perfil `admin` de Docker Compose): crear tablas, columnas, índices,
+  SQL a mano, importar y exportar. Está hecho y probado, así que no escribas un panel SQL
+  a mano. Escucha solo en `127.0.0.1:8081` y se llega por túnel SSH: es acceso SQL
+  completo y **nunca** debe exponerse a internet.

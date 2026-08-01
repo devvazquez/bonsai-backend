@@ -14,10 +14,13 @@ from typing import Any
 
 import httpx
 
-# Proveedor por defecto. Gemini porque su capa gratuita es mucho más holgada
-# que la de Groq (250.000 tokens/minuto y 1.500 peticiones/día frente a 8.000
-# tokens/minuto y 200.000 al día), que es lo que nos dejaba sin pruebas.
-DEFAULT_PROVIDER = os.environ.get("VISION_PROVIDER", "gemini").lower()
+# Proveedor por defecto: Groq, porque es el más rápido y sobre todo el más
+# regular. Medido con la misma imagen a 896 px: 552 ms de visión (551-554)
+# frente a los 844 ms de Gemini (649-937).
+#
+# Su pega es la cuota: 8.000 tokens/minuto son unas 3 fotos por minuto. Para
+# desarrollar sin pelearse con el 429, VISION_PROVIDER=gemini.
+DEFAULT_PROVIDER = os.environ.get("VISION_PROVIDER", "groq").lower()
 
 PROVIDERS = ("gemini", "groq")
 

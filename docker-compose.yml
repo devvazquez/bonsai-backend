@@ -10,12 +10,12 @@ services:
       # puedes comentar esta línea: Caddy se encarga de exponerlo.
       - "127.0.0.1:8080:8080"
     environment:
-      # El proveedor por defecto es gemini, así que su key es la obligatoria.
-      # Si pones VISION_PROVIDER=groq, cambia el ":?" de sitio.
-      - VISION_PROVIDER=${VISION_PROVIDER:-gemini}
-      - GEMINI_API_KEY=${GEMINI_API_KEY:?Define GEMINI_API_KEY en el fichero .env}
-      # Opcional: solo hace falta si pides "provider":"groq" en /describe.
-      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      # El proveedor por defecto es groq, así que su key es la obligatoria.
+      # Si pones VISION_PROVIDER=gemini, cambia el ":?" de sitio.
+      - VISION_PROVIDER=${VISION_PROVIDER:-groq}
+      - GROQ_API_KEY=${GROQ_API_KEY:?Define GROQ_API_KEY en el fichero .env}
+      # Opcional: solo hace falta si pides "provider":"gemini" en /look.
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - BONSAI_API_TOKEN=${BONSAI_API_TOKEN:-}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-*}
       - TTS_PROVIDER=${TTS_PROVIDER:-piper}
@@ -56,6 +56,35 @@ services:
       - caddy-config:/config
     depends_on:
       - bonsai
+
+  # Administrador de la base de datos: crear tablas, columnas, índices, SQL a
+  # mano, importar y exportar. Se arranca solo cuando hace falta:
+  #     docker compose --profile admin up -d
+  #
+  # OJO: esto es acceso SQL completo al fichero. Por eso escucha SOLO en
+  # 127.0.0.1 y no se expone nunca a internet. Para llegar desde tu portátil,
+  # túnel SSH:
+  #     ssh -L 8081:127.0.0.1:8081 usuario@la-vps
+  # y luego http://127.0.0.1:8081 en tu navegador.
+  #
+  # Para el día a día no hace falta: la página /memoria del propio backend ya
+  # deja ver y editar los recuerdos sin tocar SQL.
+  sqlite-web:
+    image: coleifer/sqlite-web
+    container_name: bonsai-sqlite-web
+    restart: unless-stopped
+    profiles: ["admin"]
+    ports:
+      - "127.0.0.1:8081:8080"
+    environment:
+      - SQLITE_DATABASE=bonsai.db
+      # Contraseña además del túnel, por si alguien más entra en la máquina.
+      - SQLITE_WEB_PASSWORD=${SQLITE_WEB_PASSWORD:?Define SQLITE_WEB_PASSWORD en el .env}
+    volumes:
+      - bonsai-data:/data
+    working_dir: /data
+    command: >
+      sqlite_web --host 0.0.0.0 --port 8080 --password --no-browser /data/bonsai.db
 
 volumes:
   bonsai-data:

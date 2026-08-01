@@ -35,9 +35,9 @@ API_URL = "http://127.0.0.1:8080"  # en producción: https://bonsai.tudominio.co
 DEVICE_ID = "bonsai-01"
 LANG = "ca"  # 'ca' catalán, 'es' castellano, 'en' inglés
 API_TOKEN = ""  # el mismo BONSAI_API_TOKEN del servidor (vacío = sin auth)
-# Vacíos = lo que tenga configurado el servidor (gemini + piper por defecto).
-# Se cambian en marcha con "config provider groq" y "config tts edge".
-PROVIDER = ""   # '' | 'gemini' | 'groq'
+# Vacíos = lo que tenga configurado el servidor (groq + piper por defecto).
+# Se cambian en marcha con "config provider gemini" y "config tts edge".
+PROVIDER = ""   # '' | 'groq' | 'gemini'
 TTS = ""        # '' | 'piper' | 'edge'
 TIMEOUT = 60
 
@@ -80,8 +80,9 @@ def play(path: str) -> None:
 
 
 def cmd_describe(args: list[str]) -> None:
+    """Manda una foto a /look y reproduce el audio que va llegando."""
     if not args:
-        print("Uso: describe <ruta_imagen> [prompt opcional]")
+        print("Uso: describe <ruta_imagen> [pregunta opcional]")
         return
     path, prompt = args[0], " ".join(args[1:]) or None
     if not os.path.isfile(path):
@@ -93,7 +94,9 @@ def cmd_describe(args: list[str]) -> None:
     img_b64 = base64.b64encode(img_bytes).decode()
     t_encode = time.perf_counter() - t0
 
-    body = {"deviceId": DEVICE_ID, "image": img_b64, "lang": LANG}
+    # wav para poder reproducirlo aquí; el ESP32 pide pcm16 en crudo.
+    body = {"deviceId": DEVICE_ID, "image": img_b64, "lang": LANG,
+            "audioFormat": "wav"}
     if prompt:
         body["prompt"] = prompt
     if PROVIDER:
@@ -102,33 +105,56 @@ def cmd_describe(args: list[str]) -> None:
         body["tts"] = TTS
 
     print(f"📤 Enviando ({len(img_bytes)/1024:.1f} KB, codificada en {ms(t_encode)})...")
-    data, elapsed = call("/describe", "POST", body)
-    if not data:
+
+    req = urllib.request.Request(
+        f"{API_URL}/look", data=json.dumps(body).encode(), method="POST",
+        headers={"Content-Type": "application/json",
+                 **({"X-API-Token": API_TOKEN} if API_TOKEN else {})})
+    t0 = time.perf_counter()
+    primero = None
+    trozos = []
+    try:
+        with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+            cab = resp.headers
+            while True:
+                trozo = resp.read(8192)
+                if not trozo:
+                    break
+                if primero is None:
+                    primero = time.perf_counter() - t0
+                trozos.append(trozo)
+    except urllib.error.HTTPError as e:
+        cuerpo = e.read().decode("utf-8", "ignore")
+        if e.code == 429:
+            print(f"⚠️  Cuota agotada. Reintenta en {e.headers.get('Retry-After','?')} s")
+        print(f"⚠️  HTTP {e.code}: {cuerpo[:300]}")
         return
+    except Exception as e:
+        print(f"⚠️  Error de conexión: {e}")
+        return
+    elapsed = time.perf_counter() - t0
 
+    audio = b"".join(trozos)
+    texto = base64.b64decode(cab.get("X-Bonsai-Text", "")).decode("utf-8", "replace")
     print(f"✅ Respuesta en {ms(elapsed)}")
-    print(f"📝 {data['text']}")
-    print(f"👁️  {data.get('provider')} · {data.get('model')}")
+    print(f"📝 {texto}")
+    print(f"👁️  {cab.get('X-Bonsai-Provider')} · {cab.get('X-Bonsai-Model')}")
 
-    t_decode = 0.0
-    if data.get("audio"):
-        # La extensión la manda el servidor: Piper devuelve WAV y edge-tts MP3.
-        ext = data.get("audioFormat", "mp3")
-        out = f"respuesta_{int(time.time())}.{ext}"
-        t1 = time.perf_counter()
-        open(out, "wb").write(base64.b64decode(data["audio"]))
-        t_decode = time.perf_counter() - t1
-        print(f"🔊 {out} ({data.get('tts')} · {data.get('voice')})")
-        play(out)
+    out = f"respuesta_{int(time.time())}.{cab.get('X-Bonsai-Format', 'wav')}"
+    open(out, "wb").write(audio)
+    print(f"🔊 {out} ({cab.get('X-Bonsai-Tts')} · {cab.get('X-Bonsai-Voice')}, "
+          f"{len(audio)/1024:.0f} KB)")
+    play(out)
 
     print("\n⏱️  Tiempos:")
     print(f"   Codificar imagen : {ms(t_encode)}")
-    for k, v in (data.get("timings") or {}).items():
-        print(f"   {k:<17}: {v} ms  (en el servidor)")
-    print(f"   Ida y vuelta     : {ms(elapsed)}")
-    if t_decode:
-        print(f"   Decodificar audio: {ms(t_decode)}")
-    print(f"   TOTAL            : {ms(t_encode + elapsed + t_decode)}")
+    print(f"   Reducir (servidor): {cab.get('X-Bonsai-Resize-Ms','0')} ms")
+    print(f"   Visión (servidor) : {cab.get('X-Bonsai-Vision-Ms','?')} ms")
+    if primero is not None:
+        # Es el número que importa: cuando el ESP32 podría empezar a sonar.
+        print(f"   Primer byte audio : {ms(primero)}")
+    print(f"   Audio completo    : {ms(elapsed)}")
+    print(f"   TOTAL             : {ms(t_encode + elapsed)}")
 
 
 def cmd_speak(args: list[str]) -> None:
@@ -145,6 +171,7 @@ def cmd_speak(args: list[str]) -> None:
     # Sin leer la cabecera no se sabe el formato, pero un WAV empieza por RIFF.
     ext = "wav" if audio[:4] == b"RIFF" else "mp3"
     out = f"voz_{int(time.time())}.{ext}"
+    open(out, "wb").write(audio)
     print(f"🔊 {out} ({len(audio)/1024:.1f} KB en {ms(elapsed)})")
     play(out)
 
@@ -248,8 +275,8 @@ Comandos:
   help / exit
 
 Para comparar proveedores sin reiniciar el servidor:
-  config provider groq         visión con Groq (rápido, cuota justa)
-  config provider gemini       visión con Gemini (cuota holgada)
+  config provider gemini       visión con Gemini (cuota holgada, más lento)
+  config provider groq         visión con Groq (el de por defecto)
   config tts piper             voz en local (rápida)
   config tts edge              voz de Microsoft (mejor timbre, más lenta)
   config provider auto         volver a lo que tenga el servidor
