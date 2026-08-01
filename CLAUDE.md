@@ -77,12 +77,23 @@ cp /root/.ccr/ca-bundle.crt .venv/lib/python3.11/site-packages/certifi/cacert.pe
 
 Esto es cosa del sandbox, no del proyecto: en la VPS con Docker no aplica.
 
+## Configuración más rápida de `/look` (medido)
+
+`VISION_PROVIDER=groq`, imagen reducida a 896 px e `pcm16` a 16 kHz: **primer byte de
+audio a ~1.030 ms**. Groq gana a Gemini con la misma imagen (552 ms de visión frente a
+844 ms) y además es mucho más regular: 551-554 ms frente a 649-937 ms.
+
+El precio de Groq es la cuota: 8.000 tokens/minuto son unas **3 fotos por minuto** a
+896 px. Para desarrollar sin pelearse con el 429, Gemini; para la latencia, Groq.
+
+Cosas que NO cambian la latencia, comprobadas para no volver a probarlas:
+
+- **El formato de audio.** El audio tarda 349-391 ms en salir sea `pcm16` a 22 kHz o
+  `mulaw` a 8 kHz. Elige por ancho de banda, no por velocidad.
+- Bajar de 896 a 672 px en Groq (536 ms frente a 552 ms, dentro del ruido).
+
 ## Pendiente
 
-- **Reducir la imagen en el servidor** antes de llamar al proveedor (Pillow, lado largo
-  896 px), así vale igual para la ESP32 y para la app web y no depende de que el cliente
-  se acuerde. Cuesta ~200 ms de CPU y ahorra ~2,6 s de latencia: es la mejora más
-  rentable que queda.
 - El **429 de Gemini** sigue sin verificarse contra una respuesta real (nunca se agotó la
   cuota): el parseo del `retryDelay` viene de la documentación.
 

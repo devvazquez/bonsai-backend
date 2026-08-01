@@ -480,6 +480,9 @@ crudo.
 | `ALLOWED_ORIGINS` | `*` | Orígenes CORS permitidos, separados por comas |
 | `GEMINI_VISION_MODEL` | `gemini-3.1-flash-lite` | Modelo de Gemini. Más calidad: `gemini-3.5-flash` |
 | `GEMINI_THINKING_LEVEL` | `minimal` | Razonamiento de Gemini. Subirlo trunca la respuesta: gasta los 150 tokens pensando |
+| `IMAGE_MAX_SIDE` | `896` | Lado largo al que el servidor reduce la foto. `0` lo desactiva |
+| `IMAGE_RESIZE_FOR` | `gemini,groq` | A qué proveedores se les reduce |
+| `IMAGE_JPEG_QUALITY` | `80` | Calidad del JPEG al reducir |
 | `GEMINI_MEDIA_RESOLUTION` | (el de la API) | `LOW`, `MEDIUM` o `HIGH`. Es lo que decide el coste de la imagen en Gemini, no su tamaño |
 | `GROQ_VISION_MODEL` | `qwen/qwen3.6-27b` | Modelo de visión, por si Groq lo renombra |
 | `TTS_PROVIDER` | `piper` | Motor de voz por defecto: `piper` (local, rápido) o `edge` (Microsoft, mejor voz) |
@@ -498,6 +501,7 @@ crudo.
 | --- | --- |
 | `main.py` | La API: endpoints, autenticación, construcción del prompt |
 | `vision.py` | Lo común a los proveedores: cliente HTTP, cuota agotada, formato de imagen |
+| `imagen.py` | Reduce la foto antes de mandarla al proveedor |
 | `gemini_vision.py` | Cliente de Gemini (el proveedor por defecto) |
 | `groq_vision.py` | Cliente de Groq |
 | `tts.py` | Capa común de voz: elige motor, voz por idioma y formato |
@@ -636,8 +640,23 @@ gafas para orientarse.
 Así que reducir la imagen sigue mereciendo la pena, pero por otras dos razones
 que valen para los dos proveedores: se sube antes (importa con datos móviles y
 por BLE desde la ESP32) y en Groq baja la latencia de visión a un tercio.
-Reducir en el servidor cuesta ~200 ms de CPU con Pillow para una foto de 12 MP.
-Está pendiente de hacer: hoy depende de que el cliente se acuerde.
+**Con Gemini también compensa, aunque no ahorre tokens.** Medido con la misma
+foto de 3024x4032: la visión pasó de **2.342 ms sin reducir a 988 ms a 896 px**.
+Lo que se paga con la foto grande no son tokens, es subirla y procesarla.
+
+Por eso **el servidor la reduce él mismo** (`imagen.py`), para los dos
+proveedores y sin depender de que el cliente se acuerde. Cuesta poco:
+
+| Lado largo | CPU | 977 KB se quedan en |
+| --- | --- | --- |
+| 672 px | 168 ms | 60 KB |
+| **896 px** (por defecto) | **192 ms** | **92 KB** |
+| 1120 px | 273 ms | 127 KB |
+
+Se ajusta con `IMAGE_MAX_SIDE` (0 lo desactiva), `IMAGE_RESIZE_FOR` para
+elegir a qué proveedores se aplica, o `"maxSide"` en cada petición. Respeta la
+orientación EXIF, así que las fotos de móvil dejan de describirse tumbadas, y
+si algo falla manda la original en vez de tirar la petición abajo.
 
 Cosas comprobadas que **no** ayudan, para no perder el tiempo con ellas:
 

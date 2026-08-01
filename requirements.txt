@@ -6,4 +6,6 @@ edge-tts==7.2.8
 # imagen: es el precio de bajar el TTS de 1.320 ms a 205 ms y quitarse la
 # dependencia de Microsoft. Con TTS_PROVIDER=edge no se usa.
 piper-tts==1.6.0
+# Para reducir la foto antes de mandarla a Groq, que cobra por píxeles.
+pillow==12.3.0
 pydantic==2.13.4

@@ -7,6 +7,7 @@ convierte a audio con edge-tts.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import os
 import time
@@ -18,6 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
+import imagen
 import memory
 import piper_tts
 import tts
@@ -87,6 +89,9 @@ class DescribeRequest(BaseModel):
     # (la mitad de bytes) o 'wav' (con cabecera, para navegadores).
     audioFormat: str | None = None
     sampleRate: int | None = None
+    # Lado largo al que reducir la foto en el servidor. 0 desactiva; si no
+    # se dice nada, manda IMAGE_MAX_SIDE según el proveedor.
+    maxSide: int | None = None
 
 
 class MemoryRequest(BaseModel):
@@ -214,12 +219,26 @@ async def _vision_paso(req: DescribeRequest) -> tuple[str, dict[str, int], str]:
     memory_context = memory.get_memory_context(req.deviceId)
     timings["memoria_ms"] = int((time.perf_counter() - t0) * 1000)
 
+    # Reducir la foto, si toca. Va a un hilo porque Pillow es CPU pura y
+    # bloquearía el bucle de eventos con una foto de 12 MP.
+    imagen_b64 = req.image
+    reducir = req.maxSide if req.maxSide is not None else (
+        imagen.MAX_SIDE if imagen.enabled_for(provider) else 0
+    )
+    if reducir > 0:
+        t0 = time.perf_counter()
+        imagen_b64, info_img = await asyncio.to_thread(
+            imagen.reducir, req.image, reducir
+        )
+        if info_img.get("resized"):
+            timings["reducir_ms"] = int((time.perf_counter() - t0) * 1000)
+
     t0 = time.perf_counter()
     try:
         description = await vision.describe_image(
             provider=provider,
             api_key=api_key,
-            image_base64=req.image,
+            image_base64=imagen_b64,
             system_prompt=build_system_prompt(lang, memory_context),
             user_prompt=req.prompt or "¿Qué tengo delante? Dímelo en una o dos frases.",
         )
