@@ -688,6 +688,50 @@ que las voces neuronales de Azure. **Ya está decidido: se usa `upc_ona`
 medium**, y `TTS_PROVIDER=edge` sigue disponible para quien prefiera la voz de
 Microsoft.
 
+#### Qué hardware necesita Piper
+
+Piper es **monohilo en la práctica**: medido con la misma frase, 274 ms con un
+solo núcleo y 267 ms con cuatro. Para la latencia **no sirve de nada tener más
+núcleos**, solo cuenta la potencia de un núcleo. Un VPS de 1 vCPU va igual de
+rápido que uno de 4.
+
+Medido en un Xeon a 2,10 GHz con AVX-512:
+
+| | Mediana | Factor de tiempo real |
+| --- | --- | --- |
+| `upc_ona` medium, 1 núcleo | 274 ms | 26x |
+| `upc_pau` x_low, 1 núcleo | **173 ms** | 39x |
+
+**Dónde irá igual de rápido**: cualquier x86-64 con AVX2 o AVX-512 y una
+frecuencia parecida, aunque tenga un solo vCPU. Los VPS normales de Hetzner,
+DigitalOcean o Vultr con vCPU dedicada entran aquí.
+
+**Dónde irá más lento**:
+
+- **ARM (Raspberry Pi y similares)**: se reportan factores de ~5x tiempo real
+  frente a los 26x de aquí, o sea unas 4-5 veces más lento (~1-1,5 s por
+  frase). Sigue siendo usable, pero la ventaja sobre edge-tts se encoge. Ahí
+  compensa la voz `x_low`.
+- **vCPU compartida o "burstable"** (AWS t3/t4g, planes "shared CPU"): va bien
+  mientras queden créditos y luego te estrangulan. La latencia se vuelve
+  impredecible, que es justo de lo que huíamos al dejar edge-tts.
+- **CPU sin AVX2** (Intel anteriores a ~2013, algunos Atom y Celeron): ONNX
+  Runtime cae a rutinas más lentas.
+
+**Dónde no funcionará**: en la propia ESP32-S3. No es cuestión de velocidad,
+es que no cabe: el modelo son 63 MB (28 MB el `x_low`) contra 8 MB de PSRAM, y
+no hay ONNX Runtime para ese microcontrolador. La voz la hace el servidor.
+
+**Memoria**: 210 MB de pico con el modelo medium cargado (42 MB los pone
+onnxruntime al importarse). Con 1 GB de RAM sobra; con 512 MB va justo si
+además corre Docker y Caddy.
+
+**Concurrencia**: como cada síntesis ocupa un núcleo, los 4 núcleos dan unas
+**3 síntesis por segundo** de rendimiento total. Ocho peticiones a la vez se
+resolvieron en 2.548 ms, pero ojo: eso es rendimiento agregado, no latencia:
+las últimas de la cola esperan. Para unas gafas de un solo usuario es
+irrelevante; si algún día hay varios a la vez, es el número a vigilar.
+
 #### Descartado: el TTS de Gemini
 
 Soporta catalán, pero medido con la misma frase es **inservible para esto**:
