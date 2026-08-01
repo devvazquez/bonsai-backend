@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="ca">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20viewBox%3D%220%200%2032%2032%22%3E%3Ctext%20y%3D%2226%22%20font-size%3D%2226%22%3E%F0%9F%A7%A0%3C/text%3E%3C/svg%3E">
+<title>Bonsai — memòria</title>
+<style>
+  :root { color-scheme: dark light; --fg:#e8e8e8; --dim:#9a9a9a; --bg:#151515;
+          --card:#1f1f1f; --line:#333; --ac:#7dd3a0; --bad:#ff8a80; }
+  @media (prefers-color-scheme: light) {
+    :root { --fg:#1a1a1a; --dim:#666; --bg:#f4f4f2; --card:#fff; --line:#ddd;
+            --ac:#0f7a44; --bad:#c62828; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font:15px/1.5 system-ui,-apple-system,sans-serif;
+         background:var(--bg); color:var(--fg); }
+  header { padding:14px 20px; border-bottom:1px solid var(--line);
+           display:flex; gap:14px; align-items:center; flex-wrap:wrap; }
+  h1 { font-size:1rem; margin:0; font-weight:700; }
+  .stats { color:var(--dim); font-size:.85rem; margin-left:auto; text-align:right; }
+  main { display:flex; align-items:flex-start; gap:20px; padding:20px;
+         max-width:1100px; margin:0 auto; }
+  @media (max-width:760px) { main { flex-direction:column; } aside { width:100%!important; } }
+  aside { width:270px; flex:none; }
+  section { flex:1; min-width:0; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px;
+          padding:14px; margin-bottom:12px; }
+  label { display:block; font-size:.72rem; text-transform:uppercase;
+          letter-spacing:.05em; color:var(--dim); margin-bottom:5px; }
+  input[type=text], textarea {
+    width:100%; padding:9px; font:inherit; border-radius:7px;
+    border:1px solid var(--line); background:var(--bg); color:var(--fg);
+  }
+  textarea { resize:vertical; min-height:62px; }
+  button { font:inherit; border:0; border-radius:7px; padding:9px 14px;
+           background:var(--ac); color:#04140b; font-weight:600; cursor:pointer; }
+  button.sec { background:transparent; color:var(--dim); border:1px solid var(--line);
+               font-weight:400; padding:5px 10px; font-size:.85rem; }
+  button.sec:hover { color:var(--fg); border-color:var(--fg); }
+  button.del:hover { color:var(--bad); border-color:var(--bad); }
+  button:disabled { opacity:.45; cursor:default; }
+  .disp { display:flex; justify-content:space-between; align-items:center; gap:8px;
+          width:100%; padding:9px 11px; margin-bottom:6px; cursor:pointer;
+          background:transparent; color:var(--fg); border:1px solid var(--line);
+          border-radius:7px; font-weight:400; text-align:left; }
+  .disp:hover { border-color:var(--ac); }
+  .disp[aria-current="true"] { border-color:var(--ac); background:color-mix(in srgb, var(--ac) 12%, transparent); }
+  .disp .n { color:var(--dim); font-size:.8rem; font-variant-numeric:tabular-nums; }
+  .rec { display:flex; gap:10px; align-items:flex-start; padding:11px 0;
+         border-bottom:1px solid var(--line); }
+  .rec:last-child { border-bottom:0; }
+  .rec .txt { flex:1; min-width:0; overflow-wrap:anywhere; }
+  .rec .meta { color:var(--dim); font-size:.75rem; margin-top:3px; }
+  .acc { display:flex; gap:6px; flex:none; }
+  .vacio { color:var(--dim); padding:22px 0; text-align:center; }
+  .aviso { padding:9px 12px; border-radius:7px; margin-bottom:12px; font-size:.9rem;
+           border:1px solid var(--bad); color:var(--bad); }
+  .aviso:empty { display:none; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>🧠 Memòria de Bonsai</h1>
+  <div id="tok"></div>
+  <div class="stats" id="stats"></div>
+</header>
+
+<main>
+  <aside>
+    <div class="card">
+      <label>Dispositius</label>
+      <div id="dispositius"></div>
+    </div>
+    <div class="card">
+      <label for="nouDisp">Obrir-ne un altre</label>
+      <input type="text" id="nouDisp" placeholder="bonsai-01" autocomplete="off">
+      <div style="height:8px"></div>
+      <button class="sec" id="btnObrir" style="width:100%">Obrir</button>
+    </div>
+  </aside>
+
+  <section>
+    <div class="aviso" id="error"></div>
+    <div class="card">
+      <label for="nou">Afegir un record a <span id="destino">—</span></label>
+      <textarea id="nou" placeholder="El Biel pren el cafè sense sucre"></textarea>
+      <div style="height:9px"></div>
+      <button id="btnAfegir">Afegir</button>
+    </div>
+    <div class="card">
+      <label>Records <span id="compte" style="text-transform:none"></span></label>
+      <div id="records"><div class="vacio">Tria un dispositiu.</div></div>
+    </div>
+  </section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const API = location.origin;
+let dispositiu = null;
+// El token es guarda al navegador: si el servidor en demana, no cal
+// tornar-lo a escriure a cada visita.
+let token = localStorage.getItem("bonsai.token") || "";
+
+const esc = s => String(s).replace(/[<&>"]/g, c =>
+  ({"<":"&lt;","&":"&amp;",">":"&gt;",'"':"&quot;"}[c]));
+
+async function api(ruta, opcions = {}) {
+  const cap = { "Content-Type": "application/json" };
+  if (token) cap["X-API-Token"] = token;
+  const r = await fetch(API + ruta, { ...opcions, headers: cap });
+  if (r.status === 401) {
+    // Només aquí es demana el token: mentre no calgui, no molesta.
+    const t = prompt("Aquest servidor demana un token (X-API-Token):", token);
+    if (t === null) throw new Error("Cal un token per continuar.");
+    token = t.trim(); localStorage.setItem("bonsai.token", token);
+    return api(ruta, opcions);
+  }
+  if (!r.ok) {
+    let d = await r.text();
+    try { d = JSON.parse(d).detail || d; } catch {}
+    throw new Error(`HTTP ${r.status}: ${d}`);
+  }
+  return r.status === 204 ? null : r.json();
+}
+
+function error(e) {
+  $("error").textContent = e ? String(e.message || e) : "";
+}
+
+function quan(iso) {
+  const d = new Date(iso), ara = new Date();
+  const min = Math.round((ara - d) / 60000);
+  if (min < 1) return "ara mateix";
+  if (min < 60) return `fa ${min} min`;
+  if (min < 1440) return `fa ${Math.round(min / 60)} h`;
+  return d.toLocaleDateString("ca-ES", { day: "numeric", month: "short", year: "numeric" });
+}
+
+async function carregarDispositius() {
+  try {
+    const d = await api("/memory");
+    error(null);
+    $("stats").innerHTML =
+      `${d.stats.memories} records · ${d.stats.devices} dispositius · ` +
+      `${(d.stats.dbBytes / 1024).toFixed(0)} KB<br>` +
+      `<span style="font-size:.8em">màxim ${d.stats.maxPerDevice} per dispositiu</span>`;
+    $("dispositius").innerHTML = d.devices.length
+      ? d.devices.map(x => `<button class="disp" data-d="${esc(x.device_id)}"
+             aria-current="${x.device_id === dispositiu}">
+             <span>${esc(x.device_id)}</span>
+             <span class="n">${x.total}</span></button>`).join("")
+      : `<div class="vacio" style="padding:10px 0">Encara no hi ha res.</div>`;
+    for (const b of $("dispositius").querySelectorAll(".disp"))
+      b.onclick = () => obrir(b.dataset.d);
+  } catch (e) { error(e); }
+}
+
+async function obrir(d) {
+  dispositiu = d;
+  $("destino").textContent = d;
+  $("nouDisp").value = "";
+  for (const b of $("dispositius").querySelectorAll(".disp"))
+    b.setAttribute("aria-current", b.dataset.d === d);
+  await carregarRecords();
+}
+
+async function carregarRecords() {
+  if (!dispositiu) return;
+  try {
+    const d = await api(`/memory/${encodeURIComponent(dispositiu)}`);
+    error(null);
+    $("compte").textContent = `· ${d.memories.length}`;
+    if (!d.memories.length) {
+      $("records").innerHTML = `<div class="vacio">Aquest dispositiu no recorda res.</div>`;
+      return;
+    }
+    $("records").innerHTML = d.memories.map(m => `
+      <div class="rec" data-id="${esc(m.id)}">
+        <div class="txt">
+          <div class="f">${esc(m.fact)}</div>
+          <div class="meta">${quan(m.created_at)} · <code>${esc(m.id.slice(0, 8))}</code></div>
+        </div>
+        <div class="acc">
+          <button class="sec ed">Editar</button>
+          <button class="sec del">Esborrar</button>
+        </div>
+      </div>`).join("");
+    for (const fila of $("records").querySelectorAll(".rec")) {
+      const id = fila.dataset.id;
+      fila.querySelector(".del").onclick = () => esborrar(id);
+      fila.querySelector(".ed").onclick = () => editar(fila, id);
+    }
+  } catch (e) { error(e); }
+}
+
+function editar(fila, id) {
+  const cont = fila.querySelector(".txt");
+  const actual = cont.querySelector(".f").textContent;
+  cont.innerHTML = `<textarea class="e">${esc(actual)}</textarea>
+    <div style="height:7px"></div>
+    <button class="sec ok">Desar</button> <button class="sec no">Cancel·lar</button>`;
+  const ta = cont.querySelector("textarea");
+  ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length);
+  cont.querySelector(".no").onclick = carregarRecords;
+  cont.querySelector(".ok").onclick = async () => {
+    try {
+      await api(`/memory/${encodeURIComponent(dispositiu)}/${id}`,
+                { method: "PATCH", body: JSON.stringify({ fact: ta.value }) });
+      await carregarRecords();
+    } catch (e) { error(e); }
+  };
+}
+
+async function esborrar(id) {
+  if (!confirm("Esborrar aquest record?")) return;
+  try {
+    await api(`/memory/${encodeURIComponent(dispositiu)}/${id}`, { method: "DELETE" });
+    await carregarRecords(); await carregarDispositius();
+  } catch (e) { error(e); }
+}
+
+$("btnAfegir").onclick = async () => {
+  const fact = $("nou").value.trim();
+  if (!fact) return;
+  if (!dispositiu) { error(new Error("Tria abans un dispositiu.")); return; }
+  try {
+    await api("/memory", { method: "POST",
+      body: JSON.stringify({ deviceId: dispositiu, fact }) });
+    $("nou").value = "";
+    await carregarRecords(); await carregarDispositius();
+  } catch (e) { error(e); }
+};
+
+// Ctrl+Enter per afegir sense deixar el teclat.
+$("nou").addEventListener("keydown", e => {
+  if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) $("btnAfegir").click();
+});
+
+$("btnObrir").onclick = () => {
+  const d = $("nouDisp").value.trim();
+  if (d) obrir(d);
+};
+$("nouDisp").addEventListener("keydown", e => { if (e.key === "Enter") $("btnObrir").click(); });
+
+(async () => {
+  await carregarDispositius();
+  // Obre el primer dispositiu directament: el cas normal és que només n'hi hagi un.
+  const primer = $("dispositius").querySelector(".disp");
+  if (primer) obrir(primer.dataset.d);
+})();
+</script>
+</body>
+</html>

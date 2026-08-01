@@ -100,6 +100,64 @@ def delete_memory(device_id: str, memory_id: str) -> bool:
     return cur.rowcount > 0
 
 
+def update_memory(device_id: str, memory_id: str, fact: str) -> dict[str, Any] | None:
+    """Corrige el texto de un recuerdo. Devuelve None si no existe."""
+    with _connect() as conn:
+        cur = conn.execute(
+            "UPDATE memories SET fact = ? WHERE device_id = ? AND id LIKE ?",
+            (fact, device_id, f"{memory_id}%"),
+        )
+        if cur.rowcount == 0:
+            return None
+        row = conn.execute(
+            "SELECT id, fact, created_at FROM memories "
+            "WHERE device_id = ? AND id LIKE ?",
+            (device_id, f"{memory_id}%"),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def list_devices() -> list[dict[str, Any]]:
+    """Todos los dispositivos que tienen recuerdos, con cuántos y de cuándo.
+
+    Hace falta para poder mirar la base de datos sin saberte de memoria los
+    deviceId: hasta ahora había que adivinarlos.
+    """
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT device_id, COUNT(*) AS total, "
+            "       MIN(created_at) AS first_at, MAX(created_at) AS last_at "
+            "FROM memories GROUP BY device_id ORDER BY last_at DESC"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def stats() -> dict[str, Any]:
+    with _connect() as conn:
+        total = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
+        devices = conn.execute(
+            "SELECT COUNT(DISTINCT device_id) FROM memories"
+        ).fetchone()[0]
+    try:
+        tamano = os.path.getsize(DB_PATH)
+    except OSError:
+        tamano = 0
+    return {
+        "memories": total,
+        "devices": devices,
+        "dbPath": DB_PATH,
+        "dbBytes": tamano,
+        "maxPerDevice": MAX_ITEMS,
+    }
+
+
+def clear_device(device_id: str) -> int:
+    """Borra todos los recuerdos de un dispositivo. Devuelve cuántos eran."""
+    with _connect() as conn:
+        cur = conn.execute("DELETE FROM memories WHERE device_id = ?", (device_id,))
+    return cur.rowcount
+
+
 def get_memory_context(device_id: str) -> str:
     """Devuelve los recuerdos en texto plano para inyectar en el system prompt."""
     items = list_memories(device_id)

@@ -1,70 +1,73 @@
 # Bonsai Backend
 
-Backend de **Bonsai**, unas gafas inteligentes que cuentan en voz alta lo que
-tienes delante: para orientarte, para leer un cartel o un menú, para saber qué
-es un objeto o simplemente por curiosidad. Sirven igual a quien no ve bien que
-a cualquiera que quiera preguntarle algo a lo que está mirando.
+Backend de **Bonsai**, unes ulleres intel·ligents que expliquen en veu alta què
+tens al davant: per orientar-te, per llegir un cartell o un menú, per saber què
+és un objecte o simplement per curiositat. Serveixen igual a qui no hi veu bé
+que a qualsevol que vulgui preguntar alguna cosa sobre allò que està mirant.
 
-Este servidor concentra toda la inteligencia del sistema (visión, voz y
-memoria) para que la ESP32 y la app web solo tengan que llamar a un endpoint
-HTTP. El microcontrolador no habla con ninguna API de IA: solo saca la foto y
-reproduce el audio.
+Aquest servidor concentra tota la intel·ligència del sistema (visió, veu i
+memòria) perquè l'ESP32 només hagi de cridar un endpoint HTTP. El
+microcontrolador no parla amb cap API d'IA: només fa la foto i reprodueix
+l'àudio.
 
 ```mermaid
 flowchart LR
-    A["Gafas<br/>(ESP32-S3 + OV3660)"] -- "POST /look<br/>(foto en base64)" --> C["Este backend"]
-    B["App web / móvil"] -- "POST /describe" --> C
-    C -- reduce a 896 px --> C
-    C -- imagen + contexto --> D["Gemini o Groq"]
-    D -- descripción --> C
-    C -- texto --> E["Piper<br/>(en local, voz catalana)"]
-    E -- audio --> C
+    A["Ulleres<br/>(ESP32-S3 + OV3660)"] -- "POST /look<br/>(foto en base64)" --> C["Aquest backend"]
+    C -- redueix a 896 px --> D["Gemini o Groq"]
+    D -- descripció --> C
+    C -- text --> E["Piper<br/>(en local, veu catalana)"]
+    E -- mostres --> C
     C -- "PCM16 en streaming" --> A
-    C -- "{ text, audio }" --> B
     A -- I2S --> F["MAX98357A"]
 ```
 
-En cada petición el servidor añade al prompt la fecha de hoy y los recuerdos
-guardados de ese dispositivo, para que las descripciones tengan contexto.
+De moment **no hi ha cap aplicació web**: les ulleres parlen directament amb el
+backend. El que sí que hi ha són dues pàgines de servei que el propi servidor
+serveix, per provar-lo i per administrar-lo des del navegador: `/provar` i
+`/memoria`.
 
-Las respuestas son **de 1 o 2 frases** a propósito: todo lo que dice el modelo
-hay que escucharlo después, así que cada frase de más son segundos de espera.
-Si necesitas más detalle, se pide con el campo `prompt`.
+A cada petició el servidor afegeix al prompt la data d'avui i els records
+guardats d'aquell dispositiu, perquè les descripcions tinguin context.
 
-- **Visión**: dos proveedores intercambiables, **Gemini** (por defecto, cuota
-  holgada) y **Groq** (más rápido: 552 ms medidos, pero 8.000 tokens/minuto).
-- **Voz**: **Piper** en local (por defecto), voz catalana `ca_ES-upc_ona-medium`
-  de la UPC, 205 ms y sin depender de nadie. edge-tts sigue disponible.
-- **Memoria**: SQLite, un fichero, sin servicios externos.
-- **Idiomas**: `ca` (por defecto), `es`, `en`.
+Les respostes són **d'1 o 2 frases** a propòsit: tot el que diu el model s'ha
+d'escoltar després, així que cada frase de més són segons d'espera. Si et cal
+més detall, es demana amb el camp `prompt`.
 
-Con la configuración más rápida, el **primer byte de audio sale a ~1,0-1,8 s**
-desde que llega la foto. Todos los números de este README están medidos, no
-estimados; el desglose está en [Latencia](#latencia-dónde-se-va-el-tiempo).
+- **Visió**: dos proveïdors intercanviables, **Gemini** (per defecte, quota
+  folgada) i **Groq** (més ràpid: 552 ms mesurats, però 8.000 tokens/minut).
+- **Veu**: **Piper** en local (per defecte), veu catalana `ca_ES-upc_ona-medium`
+  de la UPC, 205 ms i sense dependre de ningú. edge-tts continua disponible.
+- **Memòria**: SQLite, un fitxer, sense serveis externs.
+- **Idiomes**: `ca` (per defecte), `es`, `en`.
 
----
-
-## Índice
-
-1. [Probarlo en tu ordenador](#1-probarlo-en-tu-ordenador)
-2. [Terminal de pruebas](#2-terminal-de-pruebas)
-3. [API](#3-api)
-4. [Desplegarlo en una VPS](#4-desplegarlo-en-una-vps)
-5. [Usarlo desde la app web o la ESP32](#5-usarlo-desde-la-app-web-o-la-esp32)
-6. [Variables de entorno](#6-variables-de-entorno)
-7. [Notas técnicas](#7-notas-técnicas)
+Amb la configuració més ràpida, el **primer byte d'àudio surt a ~1,0-1,8 s** des
+que arriba la foto. Tots els números d'aquest README estan mesurats, no
+estimats; el desglossament és a [Latència](#latència-on-sen-va-el-temps).
 
 ---
 
-## 1. Probarlo en tu ordenador
+## Índex
 
-No hace falta Docker ni servidor: funciona entero en local. Solo necesitas
-**Python 3.11 o superior** y una API key gratuita de
+1. [Provar-ho al teu ordinador](#1-provar-ho-al-teu-ordinador)
+2. [Les dues pàgines web](#2-les-dues-pàgines-web)
+3. [Terminal de proves](#3-terminal-de-proves)
+4. [API](#4-api)
+5. [Desplegar-ho en un VPS](#5-desplegar-ho-en-un-vps)
+6. [Usar-ho des de l'ESP32](#6-usar-ho-des-de-lesp32)
+7. [Variables d'entorn](#7-variables-dentorn)
+8. [Notes tècniques](#8-notes-tècniques)
+
+---
+
+## 1. Provar-ho al teu ordinador
+
+No cal Docker ni servidor: funciona sencer en local. Només necessites **Python
+3.11 o superior** i una clau d'API gratuïta de
 [aistudio.google.com/apikey](https://aistudio.google.com/apikey) (o de
-[console.groq.com](https://console.groq.com) si prefieres Groq).
+[console.groq.com](https://console.groq.com) si prefereixes Groq).
 
-La voz **no** necesita ninguna clave: Piper sintetiza en local. La primera vez
-que arranca se baja solo el modelo de la voz catalana (63 MB) a `voices/`.
+La veu **no** necessita cap clau: Piper sintetitza en local. El primer cop que
+arrenca es baixa sol el model de la veu catalana (63 MB) a `voices/`.
 
 ### Windows (PowerShell)
 
@@ -74,10 +77,10 @@ cd bonsai-backend
 .\run-local.ps1
 ```
 
-La primera vez el script crea el `.env` y se para para que pongas tu
-`GEMINI_API_KEY` dentro. Lo vuelves a ejecutar y ya arranca.
+El primer cop l'script crea el `.env` i s'atura perquè hi posis la teva
+`GEMINI_API_KEY`. El tornes a executar i ja arrenca.
 
-> Si PowerShell se queja de que no puede ejecutar scripts:
+> Si el PowerShell es queixa que no pot executar scripts:
 > `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`
 
 ### Linux / macOS
@@ -89,291 +92,330 @@ chmod +x run-local.sh
 ./run-local.sh
 ```
 
-El script se encarga de todo: crea el entorno virtual, instala las
-dependencias, carga el `.env` y levanta el servidor con recarga automática
-(al guardar un `.py`, se reinicia solo).
+L'script s'encarrega de tot: crea l'entorn virtual, instal·la les dependències,
+carrega el `.env` i aixeca el servidor amb recàrrega automàtica (en desar un
+`.py`, es reinicia sol).
 
-Cuando esté en marcha:
+Quan estigui en marxa:
 
 - API: <http://127.0.0.1:8080>
-- Documentación interactiva (Swagger, se puede probar desde el navegador):
-  <http://127.0.0.1:8080/docs>
-- Página de prueba para el móvil: <http://127.0.0.1:8080/probar>
-- Comprobación rápida: <http://127.0.0.1:8080/health> dice qué proveedor de
-  visión hay activo, si su clave está puesta y si Piper cargó bien
+- Provar-ho amb una foto: <http://127.0.0.1:8080/provar>
+- Veure i editar la memòria: <http://127.0.0.1:8080/memoria>
+- Documentació interactiva (Swagger): <http://127.0.0.1:8080/docs>
+- Comprovació ràpida: <http://127.0.0.1:8080/health> diu quin proveïdor de
+  visió hi ha actiu, si té la clau posada i si el Piper ha carregat bé
 
-En local no hace falta token (`BONSAI_API_TOKEN` vacío). La base de datos de
-los recuerdos se crea en `./data/bonsai.db`.
+En local no cal token (`BONSAI_API_TOKEN` buit). La base de dades dels records
+es crea a `./data/bonsai.db`.
 
 <details>
-<summary>Arrancarlo a mano, sin el script</summary>
+<summary>Arrencar-ho a mà, sense l'script</summary>
 
 ```bash
 python -m venv .venv
 .venv/Scripts/activate        # Windows:  .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-cp .env.example .env          # y pon dentro tu GEMINI_API_KEY
+cp .env.example .env          # i posa-hi la teva GEMINI_API_KEY
 uvicorn main:app --host 127.0.0.1 --port 8080 --reload
 ```
 
-En Linux/macOS, `source .venv/bin/activate`. Con este método hay que exportar
-las variables del `.env` a mano (`set -a; . ./.env; set +a`).
+A Linux/macOS, `source .venv/bin/activate`. Amb aquest mètode cal exportar les
+variables del `.env` a mà (`set -a; . ./.env; set +a`).
 </details>
 
 ---
 
-## 2. Terminal de pruebas
+## 2. Les dues pàgines web
 
-`test_bonsai.py` es una consola interactiva para probarlo todo sin escribir
-código. No necesita dependencias (solo la librería estándar), así que se puede
-lanzar con el Python del sistema, en **otra terminal** mientras el servidor
-está en marcha:
+Les serveix el mateix backend, així que no hi ha CORS ni cal muntar res a part:
+n'hi ha prou d'obrir la IP del servidor al navegador.
+
+### `/provar` — fer una foto i escoltar la resposta
+
+Pensada per al mòbil. El botó obre la càmera del darrere amb
+`<input type="file" capture="environment">`, que a diferència de
+`getUserMedia` **no exigeix HTTPS**: per això es pot provar per IP local sense
+muntar certificats.
+
+Redueix la foto a 896 px **al mateix mòbil** abans de pujar-la, perquè amb
+dades mòbils la pujada és la part més lenta de totes: una foto de 12 MP passa
+de ~3 MB a ~60 KB. Fa servir `createImageBitmap`, que respecta l'orientació
+EXIF.
+
+Deixa triar proveïdor, idioma, veu i pregunta concreta, recorda els ajustos
+entre fotos i ensenya el desglossament de temps, així que també serveix de banc
+de proves de mà.
+
+### `/memoria` — veure i editar què recorden les ulleres
+
+Fins ara la base de dades només es podia tocar a cop de `curl` i calia saber-se
+els `deviceId` de memòria. Aquesta pàgina els llista tots amb quants records té
+cadascun, i permet **afegir, editar en línia i esborrar** sense sortir del
+navegador. A dalt a la dreta hi ha l'estat de la base de dades: quants records,
+quants dispositius, quant ocupa i el límit per dispositiu.
+
+Si el servidor demana token, el demana un sol cop i el desa al navegador.
+
+---
+
+## 3. Terminal de proves
+
+`test_bonsai.py` és una consola interactiva per provar-ho tot sense escriure
+codi. No necessita dependències (només la biblioteca estàndard), així que es
+pot llançar amb el Python del sistema, en **una altra terminal** mentre el
+servidor està en marxa:
 
 ```bash
 python test_bonsai.py
 ```
 
 ```
-bonsai> health                          # ¿responde el servidor?
-bonsai> voices ca                       # voces catalanas disponibles
+bonsai> health                          # què hi ha actiu al servidor?
+bonsai> voices ca                       # veus catalanes disponibles
 bonsai> speak Hola Biel, les ulleres funcionen
 bonsai> remember Al Biel li agrada el cafè sense sucre
 bonsai> memories
-bonsai> describe image.png              # la prueba completa: imagen -> texto -> audio
-bonsai> config url https://bonsai.tudominio.com   # apuntar a la VPS
-bonsai> config token el-token-de-la-vps
+bonsai> describe image.png              # la prova sencera: imatge -> text -> àudio
+bonsai> config url https://bonsai.eldomini.com   # apuntar al VPS
+bonsai> config token el-token-del-vps
 bonsai> help
 ```
 
-`describe` guarda el audio en la carpeta actual con la extensión que toque
-(WAV con Piper, MP3 con edge-tts), lo abre con el reproductor por defecto y
-muestra el desglose de tiempos: codificar la imagen, la visión, el TTS y la ida
-y vuelta completa.
+`describe` desa l'àudio a la carpeta actual amb l'extensió que toqui (WAV amb
+Piper, MP3 amb edge-tts), l'obre amb el reproductor per defecte i mostra el
+desglossament de temps.
 
-Se puede cambiar de proveedor sobre la marcha con `config provider groq` y
-`config tts edge`, útil para comparar sin reiniciar el servidor.
+Es pot canviar de proveïdor sobre la marxa amb `config provider groq` i
+`config tts edge`, útil per comparar sense reiniciar el servidor.
 
-El repositorio incluye una `image.png` de ejemplo para probar sin buscar fotos.
+El repositori inclou una `image.png` d'exemple per provar sense buscar fotos.
 
 ---
 
-## 3. API
+## 4. API
 
-| Método | Ruta | Descripción |
+| Mètode | Ruta | Descripció |
 | --- | --- | --- |
-| `POST` | `/describe` | El endpoint principal: imagen → texto + audio (JSON, para navegadores) |
-| `POST` | `/look` | Lo mismo para la ESP32: audio en crudo y en streaming, listo para el I2S |
-| `POST` | `/speak?text=...&lang=ca` | Solo texto a voz. Devuelve el audio en crudo (WAV con Piper, MP3 con edge-tts) |
-| `POST` | `/memory` | `{deviceId, fact}` — guarda un recuerdo |
-| `GET` | `/memory/{deviceId}` | Lista los recuerdos del dispositivo |
-| `DELETE` | `/memory/{deviceId}/{id}` | Borra un recuerdo (vale el prefijo del id) |
-| `GET` | `/voices?prefix=ca` | Voces disponibles para un idioma |
-| `GET` | `/probar` | Página de prueba para el móvil. **Sin autenticación** |
-| `GET` | `/health` | Estado del servicio. **Sin autenticación** |
+| `POST` | `/describe` | Imatge → text + àudio, en JSON. Per a navegadors |
+| `POST` | `/look` | El mateix per a l'ESP32: àudio en cru i en streaming, llest per a l'I2S |
+| `POST` | `/speak?text=...&lang=ca` | Només text a veu. Torna l'àudio en cru |
+| `GET` | `/memory` | Tots els dispositius amb records, i l'estat de la base de dades |
+| `POST` | `/memory` | `{deviceId, fact}` — desa un record |
+| `GET` | `/memory/{deviceId}` | Llista els records del dispositiu |
+| `PATCH` | `/memory/{deviceId}/{id}` | `{fact}` — corregeix el text d'un record |
+| `DELETE` | `/memory/{deviceId}/{id}` | Esborra un record (val el prefix de l'id) |
+| `DELETE` | `/memory/{deviceId}` | Buida el dispositiu sencer |
+| `GET` | `/voices?prefix=ca` | Veus disponibles per a un idioma |
+| `GET` | `/provar` | Pàgina per fer una foto des del mòbil. **Sense autenticació** |
+| `GET` | `/memoria` | Pàgina per administrar la memòria. **Sense autenticació** |
+| `GET` | `/health` | Estat del servei. **Sense autenticació** |
+
+Les dues pàgines es serveixen sense token perquè són HTML, no dades: el que hi
+ha al darrere sí que va protegit, perquè demanen les dades a l'API amb la
+capçalera `X-API-Token`.
 
 ### `POST /describe`
 
 ```jsonc
 {
-  "image": "<base64 sin el prefijo data:image/...>",
+  "image": "<base64 sense el prefix data:image/...>",
   "deviceId": "bonsai-01",
-  "prompt": "¿Qué dice el cartel?",   // opcional; por defecto, descripción general
+  "prompt": "Què diu el cartell?",     // opcional; per defecte, descripció general
   "lang": "ca",                        // opcional: ca | es | en
-  "voice": "ca_ES-upc_ona-medium",     // opcional: fuerza una voz concreta
-  "audio": true,                       // a false devuelve solo texto (mucho más rápido)
-  "provider": "gemini",                // opcional: gemini | groq. Por defecto, VISION_PROVIDER
-  "tts": "piper"                       // opcional: piper | edge. Por defecto, TTS_PROVIDER
+  "voice": "ca_ES-upc_ona-medium",     // opcional: força una veu concreta
+  "audio": true,                       // a false torna només text (molt més ràpid)
+  "provider": "gemini",                // opcional: gemini | groq. Per defecte, VISION_PROVIDER
+  "tts": "piper",                      // opcional: piper | edge. Per defecte, TTS_PROVIDER
+  "maxSide": 896                       // opcional: 0 desactiva la reducció al servidor
 }
 ```
 
-Respuesta:
+Resposta:
 
 ```jsonc
 {
-  "text": "Estàs en una plaça empedrada amb edificis antics i llums de carrer enceses. Hi ha gent passejant i terrasses de cafès al fons.",
+  "text": "Estàs en una plaça empedrada amb edificis antics i llums de carrer enceses.",
   "lang": "ca",
   "provider": "gemini",
   "model": "gemini-3.1-flash-lite",
-  "audio": "<audio en base64>",
-  "audioFormat": "wav",                // wav con Piper, mp3 con edge-tts: no lo des por hecho
+  "audio": "<àudio en base64>",
+  "audioFormat": "wav",                // wav amb Piper, mp3 amb edge-tts: no ho donis per fet
   "tts": "piper",
   "voice": "ca_ES-upc_ona-medium",
   "timings": { "memoria_ms": 0, "vision_ms": 784, "tts_ms": 362 }
 }
 ```
 
-`timings` viene en todas las respuestas: es la forma rápida de ver en qué
-etapa se va el tiempo sin tocar los logs.
+`timings` ve a totes les respostes: és la manera ràpida de veure en quina etapa
+se'n va el temps sense tocar els logs.
 
-### Elegir el proveedor de visión
+### Triar el proveïdor de visió
 
-Hay dos, con la misma interfaz, y se puede cambiar por petición con el campo
-`provider` sin reiniciar nada:
+N'hi ha dos, amb la mateixa interfície, i es canvia per petició amb el camp
+`provider` sense reiniciar res:
 
-| Proveedor | Modelo por defecto | Capa gratuita | Para qué |
+| Proveïdor | Model per defecte | Capa gratuïta | Per a què |
 | --- | --- | --- | --- |
-| `gemini` (por defecto) | `gemini-3.1-flash-lite` | 250.000 tokens/min, 1.500 peticiones/día | El del día a día: la cuota da para desarrollar de verdad |
-| `groq` | `qwen/qwen3.6-27b` | 8.000 tokens/min, 200.000 tokens/día | Más rápido, pero la cuota se agota en unas pocas fotos sin reducir |
+| `gemini` (per defecte) | `gemini-3.1-flash-lite` | 250.000 tokens/min, 1.500 peticions/dia | El del dia a dia: la quota dóna per desenvolupar de debò |
+| `groq` | `qwen/qwen3.6-27b` | 8.000 tokens/min, 200.000 tokens/dia | Més ràpid i molt més regular, però la quota s'esgota de seguida |
 
-El límite de Groq es **por organización, no por API key**: crear una key nueva
-no reinicia el contador.
+El límit de Groq és **per organització, no per clau d'API**: crear una clau nova
+no reinicia el comptador.
 
-Y un aviso que no es técnico: en la **capa gratuita** de Google, Google entrena
-con lo que le mandas (*"Google uses the content you submit to the Services and
-any generated responses to provide, improve, and develop Google products"*). En
-la de pago, no. Para unas gafas que fotografían la calle y a la gente que pasa,
-eso cuenta.
+I un avís que no és tècnic: a la **capa gratuïta** de Google, Google entrena amb
+el que li envies (*"Google uses the content you submit to the Services and any
+generated responses to provide, improve, and develop Google products"*). A la de
+pagament, no. Per a unes ulleres que fotografien el carrer i la gent que hi
+passa, això compta.
 
-`GET /health` dice en todo momento cuál es el proveedor por defecto, qué modelo
-usa cada uno y si su key está configurada.
+### Triar el motor de veu
 
-### Elegir el motor de voz
+Igual que amb la visió, n'hi ha dos i es canvia per petició amb el camp `tts`:
 
-Igual que con la visión, hay dos y se cambia por petición con el campo `tts`:
-
-| Motor | Voz por defecto (ca) | Latencia medida | Formato | Notas |
+| Motor | Veu per defecte (ca) | Latència mesurada | Format | Notes |
 | --- | --- | --- | --- | --- |
-| `piper` (por defecto) | `ca_ES-upc_ona-medium` | **205 ms** (182-422) | WAV | En local, sin red ni cuota |
-| `edge` | `ca-ES-JoanaNeural` | 1.320 ms (949-2.089) | MP3 | Mejor calidad de voz |
+| `piper` (per defecte) | `ca_ES-upc_ona-medium` | **205 ms** (182-422) | WAV | En local, sense xarxa ni quota |
+| `edge` | `ca-ES-JoanaNeural` | 1.320 ms (949-2.089) | MP3 | Millor qualitat de veu |
 
-En una petición completa con foto, el cambio se nota: **1.170 ms con Piper
-frente a 2.575 ms con edge-tts**, con la misma imagen y el mismo modelo de
-visión.
+En una petició sencera amb foto, el canvi es nota: **1.170 ms amb Piper contra
+2.575 ms amb edge-tts**, amb la mateixa imatge i el mateix model de visió.
 
-Dos cosas a tener en cuenta:
+Dues coses a tenir en compte:
 
-- **El formato cambia.** Piper devuelve WAV y edge-tts, MP3. La respuesta lo
-  dice en `audioFormat` y `/speak` en el `Content-Type`; no lo des por hecho.
-  El WAV pesa bastante más (247 KB frente a 66 KB en la misma frase), que
-  importa por BLE y con datos móviles.
-- **La voz de Piper suena más robótica.** Es un modelo VITS, no una voz
-  neuronal de Azure. Si prefieres la calidad a la latencia, `TTS_PROVIDER=edge`.
+- **El format canvia.** Piper torna WAV i edge-tts, MP3. La resposta ho diu a
+  `audioFormat` i `/speak` al `Content-Type`; no ho donis per fet. El WAV pesa
+  força més (247 KB contra 66 KB en la mateixa frase), cosa que importa per BLE
+  i amb dades mòbils.
+- **La veu de Piper sona més robòtica.** És un model VITS, no una veu neuronal
+  d'Azure. Si prefereixes la qualitat a la latència, `TTS_PROVIDER=edge`.
 
-Los modelos de Piper (63 MB para `upc_ona` medium) **se bajan solos la primera
-vez que arranca el servidor** y quedan en `voices/`. Para tenerlos antes, por
-ejemplo al construir la imagen de Docker:
+Els models de Piper (63 MB per a `upc_ona` medium) **es baixen sols el primer
+cop que arrenca el servidor** i queden a `voices/`. Per tenir-los abans, per
+exemple en construir la imatge de Docker:
 
 ```sh
-python descargar_voces.py            # la de por defecto (catalán)
+python descargar_voces.py            # la de per defecte (català)
 python descargar_voces.py --todas
 ```
 
-Si Piper no está disponible (falta el modelo, o la librería), el servidor
-**no se queda mudo**: usa edge-tts y lo dice en `/health`, en
-`tts.active` y `tts.piper.error`. El apaño es visible a propósito.
+Si Piper no està disponible (falta el model, o la llibreria), el servidor **no
+es queda mut**: fa servir edge-tts i ho diu a `/health`, a `tts.active` i
+`tts.piper.error`. L'apedaçament és visible expressament.
 
-### Errores de `/describe`
+### Errors de `/describe`
 
-| Código | Significa | Qué hacer |
+| Codi | Vol dir | Què fer |
 | --- | --- | --- |
-| `429` | Cuota del proveedor agotada | Esperar y reintentar. Viene con la cabecera `Retry-After` en segundos, sacada de la respuesta del proveedor |
-| `502` | El proveedor o edge-tts han fallado de verdad | Mirar los logs; el detalle del error va en el cuerpo, con el tipo de excepción |
-| `500` | Falta la key del proveedor elegido | Revisar el `.env` |
-| `400` | `provider` no es `gemini` ni `groq` | Corregir la petición |
+| `429` | Quota del proveïdor esgotada | Esperar i reintentar. Ve amb la capçalera `Retry-After` en segons |
+| `502` | El proveïdor o edge-tts han fallat de debò | Mirar els logs; el detall va al cos, amb el tipus d'excepció |
+| `500` | Falta la clau del proveïdor triat | Revisar el `.env` |
+| `400` | `provider` o `tts` no són vàlids | Corregir la petició |
 
-Conviene que la app distinga el `429`: no es un fallo, solo hay que esperar
-los segundos que diga `Retry-After` y volver a intentarlo, sin dar error a la
-persona que lleva las gafas.
+Convé que el client distingeixi el `429`: no és una errada, només cal esperar
+els segons que digui `Retry-After` i tornar-ho a provar, sense donar error a la
+persona que porta les ulleres.
 
-### Autenticación
+### Autenticació
 
-Todos los endpoints salvo `/health` piden la cabecera:
+Tots els endpoints excepte `/health`, `/provar` i `/memoria` demanen la
+capçalera:
 
 ```
-X-API-Token: <tu-token>
+X-API-Token: <el-teu-token>
 ```
 
-Se activa definiendo `BONSAI_API_TOKEN`. Si se deja vacío, no se exige nada:
-cómodo en local, **desaconsejado en un servidor público** — sin token,
-cualquiera que descubra la URL puede gastar la cuota de Groq.
+S'activa definint `BONSAI_API_TOKEN`. Si es deixa buit, no s'exigeix res: còmode
+en local, **desaconsellat en un servidor públic** — sense token, qualsevol que
+descobreixi la URL pot gastar la quota del proveïdor de visió.
 
 ---
 
-## 4. Desplegarlo en una VPS
+## 5. Desplegar-ho en un VPS
 
-Esta es la parte del despliegue en el servidor. Va con Docker, así que no hay
-que instalar Python ni dependencias en la máquina.
+Va amb Docker, així que no cal instal·lar Python ni dependències a la màquina.
 
-### Requisitos
+### Requisits
 
-- Acceso SSH a la VPS.
-- **Docker** y **Docker Compose** instalados.
-- Un subdominio con un registro `A` apuntando a la IP de la VPS
-  (p. ej. `bonsai.tudominio.com`).
-- Puertos **80** y **443** abiertos, solo si se usa el Caddy incluido.
-- Saber si **ya hay otro proxy inverso** en la máquina (Nginx, Traefik,
-  Apache...): eso decide entre la opción A y la B de más abajo.
+- Accés SSH al VPS.
+- **Docker** i **Docker Compose** instal·lats.
+- Un subdomini amb un registre `A` apuntant a la IP del VPS
+  (p. ex. `bonsai.eldomini.com`).
+- Ports **80** i **443** oberts, només si es fa servir el Caddy inclòs.
+- Saber si **ja hi ha un altre proxy invers** a la màquina (Nginx, Traefik,
+  Apache...): això decideix entre l'opció A i la B.
 
-### 4.1. Clonar y configurar
+### 5.1. Clonar i configurar
 
 ```bash
 git clone https://github.com/devvazquez/bonsai-backend.git
 cd bonsai-backend
 cp .env.example .env
-openssl rand -hex 32        # genera un token seguro; cópialo
+openssl rand -hex 32        # genera un token segur; copia'l
 nano .env
 ```
 
 ```ini
-GEMINI_API_KEY=la_clave_real_de_gemini
-BONSAI_API_TOKEN=el-token-que-acabas-de-generar
-BONSAI_DOMAIN=bonsai.tudominio.com
-ALLOWED_ORIGINS=https://la-app-web-de-bonsai.com
+GEMINI_API_KEY=la_clau_real_de_gemini
+BONSAI_API_TOKEN=el-token-que-acabes-de-generar
+BONSAI_DOMAIN=bonsai.eldomini.com
 ```
 
-El `.env` **nunca** se sube al repositorio (está en `.gitignore`).
+El `.env` **mai** es puja al repositori (està al `.gitignore`).
 
-### 4.2. Arrancar
+### 5.2. Arrencar
 
-#### Opción A — la VPS no tiene ningún proxy (lo más sencillo)
+#### Opció A — el VPS no té cap proxy (el més senzill)
 
-Levanta la app y un Caddy que gestiona el HTTPS solo, incluidos los
-certificados de Let's Encrypt y sus renovaciones:
+Aixeca l'aplicació i un Caddy que gestiona l'HTTPS sol, inclosos els
+certificats de Let's Encrypt i les renovacions:
 
 ```bash
 docker compose --profile caddy up -d --build
 ```
 
-El DNS tiene que apuntar ya a la VPS **antes** de arrancar: Caddy pide el
-certificado nada más levantarse.
+El DNS ha d'apuntar al VPS **abans** d'arrencar: el Caddy demana el certificat
+tot just aixecar-se.
 
-#### Opción B — la VPS ya tiene Nginx u otro proxy
+#### Opció B — el VPS ja té Nginx o un altre proxy
 
-Levanta solo la aplicación, que escucha en `127.0.0.1:8080` sin exponerse a
-internet:
+Aixeca només l'aplicació, que escolta a `127.0.0.1:8080` sense exposar-se:
 
 ```bash
 docker compose up -d --build
 ```
 
-Y se añade al proxy que ya existe algo equivalente a esto (Nginx):
+I s'afegeix al proxy que ja existeix alguna cosa equivalent a això (Nginx):
 
 ```nginx
 server {
-    server_name bonsai.tudominio.com;
+    server_name bonsai.eldomini.com;
 
-    client_max_body_size 12M;    # las imágenes en base64 ocupan
+    client_max_body_size 12M;    # les imatges en base64 ocupen
 
     location / {
         proxy_pass http://127.0.0.1:8080;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
-        proxy_read_timeout 60s;  # visión + TTS puede tardar unos segundos
+        proxy_read_timeout 60s;  # visió + TTS pot trigar uns segons
+        proxy_buffering off;     # important: /look va en streaming
     }
 }
 ```
 
-Después, `certbot --nginx -d bonsai.tudominio.com` para el HTTPS.
+Després, `certbot --nginx -d bonsai.eldomini.com` per a l'HTTPS.
 
-### 4.3. Comprobar que va
+> `proxy_buffering off` no és opcional: sense això el proxy es guarda tot
+> l'àudio abans d'enviar-lo i el streaming de `/look` deixa de servir de res.
+
+### 5.3. Comprovar que va
 
 ```bash
-docker compose ps            # el contenedor debe aparecer como "healthy"
-docker compose logs -f       # logs en vivo
+docker compose ps            # el contenidor ha de sortir com a "healthy"
+docker compose logs -f       # logs en viu
 curl http://localhost:8080/health
 ```
 
-Tiene que responder:
+Ha de respondre:
 
 ```jsonc
 {
@@ -386,140 +428,117 @@ Tiene que responder:
   },
   "tts": {
     "configured": "piper",
-    "active": "piper",              // si dice "edge" es que Piper falló
+    "active": "piper",              // si diu "edge" és que el Piper ha fallat
     "format": "wav",
     "piper": { "ok": true, "error": null, "localVoices": ["ca_ES-upc_ona-medium"] }
   }
 }
 ```
 
-Tres cosas que mirar aquí:
+Tres coses a mirar aquí:
 
-- Si `keyConfigured` sale `false` para el proveedor que usas, la clave no ha
-  llegado al contenedor: revisa el `.env` y reinicia.
-- Si `tts.active` no coincide con `tts.configured`, Piper no arrancó y se está
-  usando edge-tts. El motivo está en `tts.piper.error`.
-- `localVoices` vacío significa que el modelo de voz no se ha bajado todavía.
+- Si `keyConfigured` surt `false` per al proveïdor que fas servir, la clau no ha
+  arribat al contenidor: revisa el `.env` i reinicia.
+- Si `tts.active` no coincideix amb `tts.configured`, el Piper no ha arrencat i
+  s'està fent servir edge-tts. El motiu és a `tts.piper.error`.
+- `localVoices` buit vol dir que el model de veu encara no s'ha baixat.
 
-Desde fuera, `curl https://bonsai.tudominio.com/health`. La prueba de verdad es
-abrir **`https://bonsai.tudominio.com/probar`** en el móvil y hacer una foto, o
-usar la terminal de pruebas (sección 2).
+La prova de debò és obrir **`https://bonsai.eldomini.com/provar`** al mòbil i fer
+una foto.
 
-### 4.4. Día a día
+### 5.4. Dia a dia
 
 ```bash
-# Actualizar cuando haya cambios en el código
+# Actualitzar quan hi hagi canvis al codi
 git pull && docker compose up -d --build
 
-# Reiniciar / parar (los recuerdos sobreviven: están en un volumen)
+# Reiniciar / aturar (els records sobreviuen: són en un volum)
 docker compose restart
 docker compose down
 
 # Logs
 docker compose logs -f bonsai
 
-# Copia de seguridad de los recuerdos
+# Còpia de seguretat dels records
 docker compose cp bonsai:/data/bonsai.db ./backup-$(date +%F).db
 ```
 
-**Consumo**: es un contenedor Python que casi todo el tiempo está esperando a
-Groq. Con ~256 MB de RAM va sobrado y no usa GPU: toda la IA es remota.
+**Consum**: compta **1 GB de RAM**. El Piper en fa servir uns 210 MB ell sol
+amb el model carregat, i la resta se'n va en el contenidor i el Caddy. Amb
+512 MB va molt just. No fa servir GPU, i la visió és remota; qui treballa de
+debò a la màquina és el TTS.
+
+**vCPU**: n'hi ha prou amb **1**. El Piper és monofil a la pràctica (274 ms amb
+un nucli, 267 ms amb quatre), així que més nuclis no baixen la latència, només
+permeten atendre més peticions alhora.
 
 ---
 
-## 5. Usarlo desde la app web o la ESP32
+## 6. Usar-ho des de l'ESP32
 
-```javascript
-const resp = await fetch("https://bonsai.tudominio.com/describe", {
-  method: "POST",
-  headers: {
-    "Content-Type": "application/json",
-    "X-API-Token": "el-token-de-la-vps",
-  },
-  body: JSON.stringify({
-    deviceId: "bonsai-01",
-    image: imagenEnBase64,   // sin el prefijo "data:image/jpeg;base64,"
-    lang: "ca",
-  }),
-});
-
-const { text, audio, audioFormat } = await resp.json();
-// audioFormat es "wav" con Piper y "mp3" con edge-tts. No lo des por hecho:
-// si lo fijas a mpeg, el navegador no reproducirá el WAV de Piper.
-const tipo = audioFormat === "wav" ? "audio/wav" : "audio/mpeg";
-new Audio(`data:${tipo};base64,${audio}`).play();
-```
-
-Si solo quieres probarlo desde el móvil sin escribir nada, el servidor ya trae
-una página lista en **`/probar`**: hace la foto con la cámara, la reduce antes
-de subirla y enseña el desglose de tiempos.
-
-### Para la ESP32-S3: `POST /look`
-
-`/describe` está pensado para navegadores: devuelve JSON con el audio en
-base64, que es un 33 % más de bytes y obliga a decodificar en el
-microcontrolador. Para el ESP32-S3 con un MAX98357A está `/look`, que hace lo
-mismo en **una sola petición** pero devolviendo el audio en crudo y **en
-streaming**.
+`/describe` està pensat per a navegadors: torna JSON amb l'àudio en base64, que
+és un 33 % més de bytes i obliga a descodificar al microcontrolador. Per a
+l'ESP32-S3 amb un MAX98357A hi ha **`/look`**, que fa el mateix en **una sola
+petició** però tornant l'àudio en cru i **en streaming**.
 
 ```jsonc
 POST /look
 {
   "image": "<base64>", "deviceId": "bonsai-01", "lang": "ca",
-  "audioFormat": "pcm16",   // pcm16 | mulaw | wav. Por defecto pcm16
-  "sampleRate": 16000       // 8000 | 16000 | 22050. Por defecto, el de la voz
+  "audioFormat": "pcm16",   // pcm16 | mulaw | wav. Per defecte pcm16
+  "sampleRate": 16000       // 8000 | 16000 | 22050. Per defecte, el de la veu
 }
 ```
 
-El cuerpo son las muestras tal cual: con `pcm16` son enteros de 16 bits con
-signo, little-endian, mono, que es exactamente lo que quiere el I2S del
-MAX98357A. Se escriben con `i2s_write()` sin cabecera, sin códec y sin
-conversión. El texto y los parámetros del audio van en cabeceras, para que el
-firmware no tenga que adivinar cómo configurar el I2S:
+El cos són les mostres tal qual: amb `pcm16` són enters de 16 bits amb signe,
+little-endian, mono, que és exactament el que vol l'I2S del MAX98357A.
+S'escriuen amb `i2s_write()` sense capçalera, sense còdec i sense conversió. El
+text i els paràmetres de l'àudio van a capçaleres, perquè el firmware no hagi
+d'endevinar com configurar l'I2S:
 
 ```
-X-Bonsai-Text: <el texto, UTF-8 en base64>
+X-Bonsai-Text: <el text, UTF-8 en base64>
 X-Bonsai-Format: pcm16     X-Bonsai-Rate: 16000
 X-Bonsai-Bits: 16          X-Bonsai-Channels: 1
+X-Bonsai-Vision-Ms: 552    X-Bonsai-Resize-Ms: 192
 ```
 
-**Por qué el streaming cambia las cuentas.** Medido, el primer byte de audio
-sale a los **1.024-1.463 ms** (casi todo es la visión). A partir de ahí el
-audio llega más rápido de lo que se escucha, así que la descarga **se solapa
-con la reproducción y deja de sumar latencia**: solo tiene que ir más rápido
-que el tiempo real.
+**Per què el streaming canvia els comptes.** Mesurat, el primer byte d'àudio
+surt als **1.024-1.463 ms** (gairebé tot és la visió). A partir d'aquí l'àudio
+arriba més ràpid del que es pot escoltar, així que la baixada **se solapa amb
+la reproducció i deixa de sumar latència**: només ha d'anar més ràpid que el
+temps real.
 
-| Formato | Tamaño (frase de ~8 s) | Ritmo en tiempo real | Margen a 150 KB/s |
+| Format | Mida (frase de ~8 s) | Ritme en temps real | Marge a 150 KB/s |
 | --- | --- | --- | --- |
 | `pcm16` 22050 Hz | 370 KB | 44,1 KB/s | 3,4x |
 | `pcm16` 16000 Hz | 237 KB | 32,0 KB/s | 4,7x |
 | `mulaw` 16000 Hz | 131 KB | 16,0 KB/s | 9,4x |
 | `mulaw` 8000 Hz | 65 KB | 8,0 KB/s | 19x |
 
-`pcm16` a 16 kHz es el equilibrio razonable: nada que descodificar y margen de
-sobra. `mulaw` se expande en el ESP32 con una tabla de 256 entradas (una suma
-y un desplazamiento por muestra) y es lo que conviene si el WiFi va justo, a
-costa de calidad. `wav` es solo para navegadores: lleva cabecera con las
-longitudes a 0xFFFFFFFF porque al empezar a responder aún no se sabe cuánto
-audio habrá.
+`pcm16` a 16 kHz és l'equilibri raonable: res a descodificar i marge de sobres.
+`mulaw` s'expandeix a l'ESP32 amb una taula de 256 entrades (una suma i un
+desplaçament per mostra) i és el que convé si el WiFi va just. `wav` és només
+per a navegadors.
 
-`/look` exige Piper (devuelve un 400 con `"tts": "edge"`): edge-tts da MP3 y
-la idea es justamente no tener que descodificar nada.
+`/look` exigeix Piper (torna un 400 amb `"tts": "edge"`): edge-tts dóna MP3 i la
+idea és justament no haver de descodificar res.
 
-Para solo texto a voz sigue estando `/speak`, que también devuelve el audio en
-crudo.
+**No separis `/describe` i `/speak` per guanyar temps**: són dos viatges d'anada
+i tornada i surt pitjor. El que es vol (evitar el base64 i sonar abans) ho dóna
+`/look` en una sola petició.
 
-#### Cómo configurar la cámara (OV3660)
+### Com configurar la càmera (OV3660)
 
-La XIAO ESP32S3 Sense monta un **OV3660: 3 MP, 2048x1536 (QXGA), 1/5"**, en las
-revisiones nuevas (las viejas llevaban un OV2640 de 2 MP).
+La XIAO ESP32S3 Sense munta un **OV3660: 3 MP, 2048x1536 (QXGA), 1/5"**, a les
+revisions noves (les velles portaven un OV2640 de 2 MP).
 
-Capturar a la resolución máxima es tirar el tiempo y la cuota. Lo que interesa
-es que la foto **ya salga de la cámara con el tamaño bueno**, porque si el lado
-largo no pasa de `IMAGE_MAX_SIDE` (896 por defecto) el servidor no la toca y se
-ahorra el remuestreo:
+Capturar a la resolució màxima és llençar el temps i la quota. El que interessa
+és que la foto **ja surti de la càmera amb la mida bona**, perquè si el costat
+llarg no passa de `IMAGE_MAX_SIDE` (896 per defecte) el servidor no la toca i
+s'estalvia el remostreig:
 
-| `frame_size` | Píxeles | KB | Tokens en Groq | ¿Reduce el servidor? |
+| `frame_size` | Píxels | KB | Tokens a Groq | El servidor la redueix? |
 | --- | --- | --- | --- | --- |
 | `FRAMESIZE_VGA` | 640x480 | 58 | 1.353 | No |
 | **`FRAMESIZE_SVGA`** | **800x600** | **81** | **2.115** | **No** |
@@ -527,425 +546,367 @@ ahorra el remuestreo:
 | `FRAMESIZE_UXGA` | 1600x1200 | 208 | 8.458 | Sí |
 | `FRAMESIZE_QXGA` | 2048x1536 | 290 | 13.858 | Sí |
 
-**SVGA es el punto bueno**: es 4:3 como el sensor (no recorta), no dispara el
-remuestreo en el servidor y sigue leyendo rótulos. Comprobado de extremo a
-extremo: `reducir 0 ms`, visión 883 ms. Con QXGA gastarías 6,5 veces más cuota
-para que el servidor lo tire todo a 896 px de todas formas.
+**SVGA és el punt bo**: és 4:3 com el sensor (no retalla), no dispara el
+remostreig al servidor i continua llegint rètols. Comprovat d'extrem a extrem:
+`redueix 0 ms`, visió 883 ms. Amb QXGA gastaries 6,5 vegades més quota perquè el
+servidor ho tiri tot a 896 px igualment.
 
 ```c
 camera_config_t config = {
-    // ... los pines de la XIAO ...
+    // ... els pins de la XIAO ...
     .xclk_freq_hz = 20000000,
-    .pixel_format = PIXFORMAT_JPEG,     // que comprima el sensor, no la CPU
+    .pixel_format = PIXFORMAT_JPEG,     // que comprimeixi el sensor, no la CPU
     .frame_size   = FRAMESIZE_SVGA,     // 800x600
-    .jpeg_quality = 12,                 // ojo: 0-63 y MENOS es MEJOR
-    .fb_count     = 2,                  // el OV3660 necesita 2
+    .jpeg_quality = 12,                 // compte: 0-63 i MENYS és MILLOR
+    .fb_count     = 2,                  // l'OV3660 en necessita 2
     .fb_location  = CAMERA_FB_IN_PSRAM,
-    .grab_mode    = CAMERA_GRAB_LATEST, // si no, te llevas el fotograma viejo
+    .grab_mode    = CAMERA_GRAB_LATEST, // si no, t'emportes el fotograma vell
 };
 
-// Ajustes propios del OV3660, del ejemplo oficial CameraWebServer
+// Ajustos propis de l'OV3660, de l'exemple oficial CameraWebServer
 sensor_t *s = esp_camera_sensor_get();
 if (s->id.PID == OV3660_PID) {
-    s->set_vflip(s, 1);         // el OV3660 viene del revés
+    s->set_vflip(s, 1);         // l'OV3660 ve del revés
     s->set_brightness(s, 1);
-    s->set_saturation(s, -2);   // satura de más
+    s->set_saturation(s, -2);   // satura de més
 }
 ```
 
-Cuatro cosas que suelen dar guerra:
+Quatre coses que solen donar guerra:
 
-- **`jpeg_quality` va al revés** que en todas partes: 0-63 y cuanto **menos**,
-  mejor calidad y más bytes. 10-12 va bien; con 30 el modelo empieza a fallar
-  al leer texto.
-- **Tira los 2 o 3 primeros fotogramas** tras encender la cámara: el
-  autoexposición y el balance de blancos tardan en asentarse y las primeras
-  fotos salen oscuras o verdosas. `esp_camera_fb_get()` + `esp_camera_fb_return()`
-  y a la basura.
-- **PSRAM**: la XIAO lleva OCTAL, no QUAD (`CONFIG_SPIRAM_MODE_OCT=y`). Con el
-  OV3660 hace falta además `CONFIG_CAMERA_PSRAM_DMA_MODE=n`, y bajar
-  `CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL` a 4096 para que quede memoria para el
-  WiFi.
-- **No captures en RGB565 para comprimir luego por software.** Con
-  `PIXFORMAT_JPEG` comprime el propio sensor y sale gratis.
+- **`jpeg_quality` va al revés** que a tot arreu: 0-63 i com **menys**, millor
+  qualitat i més bytes. 10-12 va bé; amb 30 el model comença a fallar en llegir
+  text.
+- **Llença els 2 o 3 primers fotogrames** després d'encendre la càmera:
+  l'autoexposició i el balanç de blancs triguen a assentar-se i les primeres
+  fotos surten fosques o verdoses.
+- **PSRAM**: la XIAO porta OCTAL, no QUAD (`CONFIG_SPIRAM_MODE_OCT=y`). Amb
+  l'OV3660 cal a més `CONFIG_CAMERA_PSRAM_DMA_MODE=n`, i baixar
+  `CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL` a 4096 perquè quedi memòria per al WiFi.
+- **No capturis en RGB565 per comprimir després per programari.** Amb
+  `PIXFORMAT_JPEG` comprimeix el mateix sensor i surt de franc.
+
+I una cosa del firmware que val més que qualsevol optimització del servidor:
+**mantén la connexió TLS oberta** entre fotos. El handshake és el més car de tot
+el costat del dispositiu.
 
 ---
 
-## 6. Variables de entorno
+## 7. Variables d'entorn
 
-| Variable | Por defecto | Para qué sirve |
+| Variable | Per defecte | Per a què serveix |
 | --- | --- | --- |
-| `VISION_PROVIDER` | `gemini` | Proveedor de visión por defecto: `gemini` o `groq` |
-| `GEMINI_API_KEY` | — | **Obligatoria** con el proveedor por defecto. Clave de [aistudio.google.com/apikey](https://aistudio.google.com/apikey) |
-| `GROQ_API_KEY` | — | Obligatoria solo si usas `groq`. Clave de [console.groq.com](https://console.groq.com) |
-| `BONSAI_API_TOKEN` | vacío | Protege la API. Vacío = sin autenticación |
-| `ALLOWED_ORIGINS` | `*` | Orígenes CORS permitidos, separados por comas |
-| `GEMINI_VISION_MODEL` | `gemini-3.1-flash-lite` | Modelo de Gemini. Más calidad: `gemini-3.5-flash` |
-| `GEMINI_THINKING_LEVEL` | `minimal` | Razonamiento de Gemini. Subirlo trunca la respuesta: gasta los 150 tokens pensando |
-| `IMAGE_MAX_SIDE` | `896` | Lado largo al que el servidor reduce la foto. `0` lo desactiva |
-| `IMAGE_RESIZE_FOR` | `gemini,groq` | A qué proveedores se les reduce |
-| `IMAGE_JPEG_QUALITY` | `80` | Calidad del JPEG al reducir |
-| `GEMINI_MEDIA_RESOLUTION` | (el de la API) | `LOW`, `MEDIUM` o `HIGH`. Es lo que decide el coste de la imagen en Gemini, no su tamaño |
-| `GROQ_VISION_MODEL` | `qwen/qwen3.6-27b` | Modelo de visión, por si Groq lo renombra |
-| `TTS_PROVIDER` | `piper` | Motor de voz por defecto: `piper` (local, rápido) o `edge` (Microsoft, mejor voz) |
-| `PIPER_VOICES_DIR` | `./voices` | Dónde viven los modelos `.onnx` de Piper |
-| `BONSAI_DB_PATH` | `/data/bonsai.db` o `./data/bonsai.db` | Ruta de la base de datos de recuerdos |
-| `BONSAI_DOMAIN` | — | Dominio para el HTTPS automático (solo con el perfil `caddy`) |
-| `PORT` | `8080` | Puerto dentro del contenedor |
+| `VISION_PROVIDER` | `gemini` | Proveïdor de visió: `gemini` o `groq` |
+| `GEMINI_API_KEY` | — | **Obligatòria** amb el proveïdor per defecte. [aistudio.google.com/apikey](https://aistudio.google.com/apikey) |
+| `GROQ_API_KEY` | — | Obligatòria només si fas servir `groq` |
+| `TTS_PROVIDER` | `piper` | Motor de veu: `piper` (local, ràpid) o `edge` (Microsoft, millor veu) |
+| `PIPER_VOICES_DIR` | `./voices` | On viuen els models `.onnx` del Piper |
+| `BONSAI_API_TOKEN` | buit | Protegeix l'API. Buit = sense autenticació |
+| `ALLOWED_ORIGINS` | `*` | Orígens CORS permesos, separats per comes |
+| `GEMINI_VISION_MODEL` | `gemini-3.1-flash-lite` | Més qualitat: `gemini-3.5-flash` |
+| `GEMINI_THINKING_LEVEL` | `minimal` | Pujar-ho trunca la resposta: gasta els 150 tokens pensant |
+| `GEMINI_MEDIA_RESOLUTION` | (el de l'API) | `LOW`, `MEDIUM` o `HIGH`. És el que decideix el cost de la imatge a Gemini |
+| `GROQ_VISION_MODEL` | `qwen/qwen3.6-27b` | Per si Groq el reanomena |
+| `IMAGE_MAX_SIDE` | `896` | Costat llarg al qual el servidor redueix la foto. `0` ho desactiva |
+| `IMAGE_RESIZE_FOR` | `gemini,groq` | A quins proveïdors se'ls redueix |
+| `IMAGE_JPEG_QUALITY` | `80` | Qualitat del JPEG en reduir |
+| `BONSAI_DB_PATH` | `/data/bonsai.db` o `./data/bonsai.db` | Ruta de la base de dades de records |
+| `BONSAI_DOMAIN` | — | Domini per a l'HTTPS automàtic (només amb el perfil `caddy`) |
+| `PORT` | `8080` | Port dins del contenidor |
 
 ---
 
-## 7. Notas técnicas
+## 8. Notes tècniques
 
 ### Estructura
 
-| Fichero | Contenido |
+| Fitxer | Contingut |
 | --- | --- |
-| `main.py` | La API: endpoints, autenticación, construcción del prompt |
-| `vision.py` | Lo común a los proveedores: cliente HTTP, cuota agotada, formato de imagen |
-| `imagen.py` | Reduce la foto antes de mandarla al proveedor |
-| `gemini_vision.py` | Cliente de Gemini (el proveedor por defecto) |
-| `groq_vision.py` | Cliente de Groq |
-| `tts.py` | Capa común de voz: elige motor, voz por idioma y formato |
-| `piper_tts.py` | Voz en local con Piper (el motor por defecto) |
-| `memory.py` | Recuerdos por dispositivo en SQLite |
-| `static/probar.html` | Página de prueba para el móvil, en `/probar` |
-| `test_bonsai.py` | Terminal de pruebas, sin dependencias |
-| `bench_latency.py` | Banco de pruebas de latencia, con tope de cuota |
-| `descargar_voces.py` | Baja los modelos de Piper a `voices/` |
-| `Dockerfile`, `docker-compose.yml`, `Caddyfile` | Despliegue |
-| `run-local.ps1`, `run-local.sh` | Desarrollo en local sin Docker |
+| `main.py` | L'API: endpoints, autenticació, construcció del prompt |
+| `vision.py` | El comú als proveïdors: client HTTP, quota esgotada, format d'imatge |
+| `imagen.py` | Redueix la foto abans d'enviar-la al proveïdor |
+| `gemini_vision.py` | Client de Gemini (el proveïdor per defecte) |
+| `groq_vision.py` | Client de Groq |
+| `tts.py` | Capa comuna de veu: tria motor, veu per idioma i format |
+| `piper_tts.py` | Veu en local amb Piper (el motor per defecte) |
+| `memory.py` | Records per dispositiu en SQLite |
+| `static/probar.html` | Pàgina per fer fotos des del mòbil, a `/provar` |
+| `static/memoria.html` | Pàgina per administrar la memòria, a `/memoria` |
+| `test_bonsai.py` | Terminal de proves, sense dependències |
+| `bench_latency.py` | Banc de proves de latència, amb topall de quota |
+| `descargar_voces.py` | Baixa els models del Piper a `voices/` |
+| `Dockerfile`, `docker-compose.yml`, `Caddyfile` | Desplegament |
+| `run-local.ps1`, `run-local.sh` | Desenvolupament en local sense Docker |
 
-### Por qué Python y no Cloudflare Workers
+### Per què Python i no Cloudflare Workers
 
-La primera versión de este backend estaba en Cloudflare Workers. El requisito
-del **catalán** obliga a usar edge-tts, que necesita un WebSocket con
-cabeceras propias sobre un socket TCP real: algo que Workers no permite.
+La primera versió d'aquest backend era a Cloudflare Workers. El requisit del
+**català** obligava a fer servir edge-tts, que necessita un WebSocket amb
+capçaleres pròpies sobre un socket TCP real: cosa que Workers no permet.
 
-| Intento | Resultado |
+| Intent | Resultat |
 | --- | --- |
-| edge-tts a mano en Workers (fetch + Upgrade) | Microsoft devuelve cientos de frames binarios vacíos |
-| npm `edge-tts-universal` en Workers | `ws` no funciona ahí → WebSocket sin cabeceras → 403 |
-| Workers AI (`melotts`) | Funciona, pero no tiene catalán |
-| Groq TTS | Solo inglés y árabe |
-| **edge-tts en Python** | ✅ Funciona, con catalán |
+| edge-tts a mà a Workers (fetch + Upgrade) | Microsoft torna centenars de frames binaris buits |
+| npm `edge-tts-universal` a Workers | `ws` no hi funciona → WebSocket sense capçaleres → 403 |
+| Workers AI (`melotts`) | Funciona, però no té català |
+| Groq TTS | Només anglès i àrab |
+| **edge-tts en Python** | ✅ Funciona, amb català |
 
-De ahí que ahora sea un contenedor Python en una VPS.
+Ara, amb el Piper en local, aquella dependència ja ni tan sols cal — però la
+conclusió es manté: aquest servei necessita un procés Python de debò, no una
+funció al límit.
 
-### Latencia: dónde se va el tiempo
+### Latència: on se'n va el temps
 
-Todo lo de abajo está medido, no estimado. Cada respuesta trae su `timings`
-para poder repetir las mediciones.
+Tot això està mesurat, no estimat. Cada resposta porta els seus `timings` per
+poder repetir les mesures.
 
-| Etapa | Tiempo | Comentario |
+| Etapa | Temps | Comentari |
 | --- | --- | --- |
-| Subir la imagen + red hasta el proveedor | ~0,7 s | Depende de tu conexión de subida |
-| Visión, Gemini `3.1-flash-lite` | **0,84-1,25 s** | Medido de extremo a extremo, incluida la red |
-| Visión, Groq `qwen3.6-27b` | 1,07 s con la imagen a 896 px | 2,4-3,8 s sin reducirla |
-| edge-tts, texto nuevo | 0,95-2,1 s (mediana 1,32 s) | **Es el cuello de botella.** Ver la trampa de la caché, más abajo |
-| Escuchar el audio | ~10 s | 1-2 frases. Es el tramo más largo de todos |
+| Reduir la foto al servidor | 192 ms | Només si arriba més gran de 896 px |
+| Visió, Groq `qwen3.6-27b` | **552 ms** (551-554) | El més ràpid i el més regular |
+| Visió, Gemini `3.1-flash-lite` | 844 ms (649-937) | Més irregular |
+| Veu, Piper `upc_ona` | 205 ms | En local |
+| Veu, edge-tts amb text nou | 1.320 ms (949-2.089) | Depèn de Microsoft |
+| Escoltar l'àudio | ~10 s | 1-2 frases. És el tram més llarg de tots |
 
-En una petición completa medida (`/describe` con audio, en catalán): visión
-838 ms, TTS 4.336 ms. Ese 4,3 s es la cola mala del TTS (primera conexión);
-en régimen la mediana es 1,32 s. Aun así el TTS es la etapa más lenta con
-diferencia: acortar el texto o empezar a reproducir antes rinde mucho más que
-acelerar la visión.
+**La configuració més ràpida**, mesurada d'extrem a extrem:
+`VISION_PROVIDER=groq`, imatge a 896 px i `pcm16` a 16 kHz → **primer byte
+d'àudio a ~1.030 ms**.
 
-#### La trampa al medir edge-tts: Microsoft cachea por texto y voz
+El preu del Groq és la quota: 8.000 tokens/minut són unes **3 fotos per minut** a
+896 px. Per desenvolupar sense barallar-se amb el 429, Gemini; per a la
+latència, Groq.
 
-**Cualquier medición que repita la misma frase es falsa**, y es fácil caer sin
-darse cuenta: basta haber sintetizado ese texto en una prueba anterior, porque
-la caché es del servidor de Microsoft y sobrevive entre ejecuciones. Medido con
-8 frases catalanas nuevas, cada una una sola vez, y luego las mismas 8 otra vez:
+#### La trampa en mesurar edge-tts: Microsoft cacheja per text i veu
 
-| | Primer trozo | Audio completo |
+**Qualsevol mesura que repeteixi la mateixa frase és falsa**, i és fàcil caure-hi
+sense adonar-se'n: n'hi ha prou d'haver sintetitzat aquell text en una prova
+anterior, perquè la memòria cau és del servidor de Microsoft i sobreviu entre
+execucions. Mesurat amb 8 frases catalanes noves, cadascuna un sol cop, i
+després les mateixes 8 una altra vegada:
+
+| | Primer tros | Àudio complet |
 | --- | --- | --- |
-| Texto nuevo (lo que pasa en uso real) | mediana **1.092 ms**, hasta 1.864 | mediana **1.320 ms**, hasta 2.089 |
-| Texto repetido (caché) | mediana 262 ms | mediana 430 ms |
+| Text nou (el que passa en ús real) | mediana **1.092 ms**, fins a 1.864 | mediana **1.320 ms**, fins a 2.089 |
+| Text repetit (memòria cau) | mediana 262 ms | mediana 430 ms |
 
-Son **3,1 veces** de diferencia. En las gafas el texto es siempre nuevo, así que
-la columna que cuenta es la primera. Las demos de edge-tts que presumen de
-0,4 s están midiendo la caché.
+Són **3,1 vegades** de diferència. A les ulleres el text sempre és nou, així que
+la columna que compta és la primera. Les demos d'edge-tts que presumeixen de
+0,4 s estan mesurant la memòria cau.
 
-#### Alternativa evaluada: Piper (local)
+#### Per què Piper, i quin maquinari necessita
 
-[Piper](https://github.com/rhasspy/piper) tiene dos voces catalanas de la UPC
-(`upc_ona`, `upc_pau`) y sintetiza **en local**, sin red. Medido con la misma
-frase, y aquí no hay caché que engañe porque cada síntesis se hace de cero:
+[Piper](https://github.com/rhasspy/piper) té dues veus catalanes de la UPC
+(`upc_ona`, `upc_pau`) i sintetitza **en local**, sense xarxa. Aquí no hi ha
+memòria cau que enganyi, perquè cada síntesi es fa de zero:
 
-| | Mediana | Rango | Notas |
+| | Mediana | Rang | Notes |
 | --- | --- | --- | --- |
-| `upc_ona` medium, 22 kHz | **205 ms** | 182-422 | Modelo de 63 MB |
-| `upc_pau` x_low, 16 kHz | **122 ms** | 105-219 | Modelo de 28 MB |
-| edge-tts, texto nuevo, 24 kHz | 1.320 ms | 949-2.089 | Depende de Microsoft |
+| `upc_ona` medium, 22 kHz | **205 ms** | 182-422 | Model de 63 MB |
+| `upc_pau` x_low, 16 kHz | **122 ms** | 105-219 | Model de 28 MB |
+| edge-tts, text nou, 24 kHz | 1.320 ms | 949-2.089 | Depèn de Microsoft |
 
-Es **6,4 veces más rápido** que edge-tts con texto nuevo, y sobre todo
-predecible: sin red, sin cola larga y sin depender de un servicio ajeno. El
-modelo tarda ~1,2 s en cargarse una sola vez al arrancar.
+És **6,4 vegades més ràpid** que edge-tts amb text nou, i sobretot predictible:
+sense xarxa, sense cua llarga i sense dependre d'un servei aliè. El model triga
+~1,2 s a carregar-se un sol cop en arrencar.
 
-La contrapartida es la calidad de voz: son modelos VITS y suenan más robóticos
-que las voces neuronales de Azure. **Ya está decidido: se usa `upc_ona`
-medium**, y `TTS_PROVIDER=edge` sigue disponible para quien prefiera la voz de
-Microsoft.
+Piper és **monofil a la pràctica**: 274 ms amb un sol nucli i 267 ms amb quatre.
+Per a la latència **no serveix de res tenir més nuclis**, només compta la
+potència d'un. Un VPS d'1 vCPU va igual de ràpid que un de 4.
 
-#### Qué hardware necesita Piper
+**On anirà igual de ràpid**: qualsevol x86-64 amb AVX2 o AVX-512 i una
+freqüència semblant, encara que tingui un sol vCPU.
 
-Piper es **monohilo en la práctica**: medido con la misma frase, 274 ms con un
-solo núcleo y 267 ms con cuatro. Para la latencia **no sirve de nada tener más
-núcleos**, solo cuenta la potencia de un núcleo. Un VPS de 1 vCPU va igual de
-rápido que uno de 4.
+**On anirà més lent**:
 
-Medido en un Xeon a 2,10 GHz con AVX-512:
+- **ARM (Raspberry Pi i similars)**: es reporten factors de ~5x temps real
+  contra els 26x d'aquí, o sigui unes 4-5 vegades més lent (~1-1,5 s per frase).
+  Allà compensa la veu `x_low`.
+- **vCPU compartida o "burstable"** (AWS t3/t4g, plans "shared CPU"): va bé
+  mentre quedin crèdits i després t'escanyen. La latència es torna
+  impredictible, que és justament del que fugíem en deixar edge-tts.
+- **CPU sense AVX2** (Intel anteriors a ~2013, alguns Atom i Celeron).
 
-| | Mediana | Factor de tiempo real |
-| --- | --- | --- |
-| `upc_ona` medium, 1 núcleo | 274 ms | 26x |
-| `upc_pau` x_low, 1 núcleo | **173 ms** | 39x |
+**On no funcionarà**: a la mateixa ESP32-S3. No és qüestió de velocitat, és que
+no hi cap: el model són 63 MB (28 MB el `x_low`) contra 8 MB de PSRAM, i no hi
+ha ONNX Runtime per a aquell microcontrolador.
 
-**Dónde irá igual de rápido**: cualquier x86-64 con AVX2 o AVX-512 y una
-frecuencia parecida, aunque tenga un solo vCPU. Los VPS normales de Hetzner,
-DigitalOcean o Vultr con vCPU dedicada entran aquí.
+**Concurrència**: com que cada síntesi ocupa un nucli, 4 nuclis donen unes **3
+síntesis per segon** de rendiment total. Vuit peticions alhora es van resoldre
+en 2.548 ms, però això és rendiment agregat, no latència: les últimes de la cua
+esperen.
 
-**Dónde irá más lento**:
+#### La resta del TTS català: Matxa, alVoCat, StyleTTS2
 
-- **ARM (Raspberry Pi y similares)**: se reportan factores de ~5x tiempo real
-  frente a los 26x de aquí, o sea unas 4-5 veces más lento (~1-1,5 s por
-  frase). Sigue siendo usable, pero la ventaja sobre edge-tts se encoge. Ahí
-  compensa la voz `x_low`.
-- **vCPU compartida o "burstable"** (AWS t3/t4g, planes "shared CPU"): va bien
-  mientras queden créditos y luego te estrangulan. La latencia se vuelve
-  impredecible, que es justo de lo que huíamos al dejar edge-tts.
-- **CPU sin AVX2** (Intel anteriores a ~2013, algunos Atom y Celeron): ONNX
-  Runtime cae a rutinas más lentas.
+El BSC (Barcelona Supercomputing Center) i el Projecte AINA han publicat força
+TTS català, i és el millor que hi ha en qualitat. El problema per a les ulleres
+és la velocitat.
 
-**Dónde no funcionará**: en la propia ESP32-S3. No es cuestión de velocidad,
-es que no cabe: el modelo son 63 MB (28 MB el `x_low`) contra 8 MB de PSRAM, y
-no hay ONNX Runtime para ese microcontrolador. La voz la hace el servidor.
+Mesurat aquí mateix, amb la **mateixa locutora `ona`** que fa servir la nostra
+veu del Piper i la mateixa frase, al mateix Xeon:
 
-**Memoria**: 210 MB de pico con el modelo medium cargado (42 MB los pone
-onnxruntime al importarse). Con 1 GB de RAM sobra; con 512 MB va justo si
-además corre Docker y Caddy.
-
-**Concurrencia**: como cada síntesis ocupa un núcleo, los 4 núcleos dan unas
-**3 síntesis por segundo** de rendimiento total. Ocho peticiones a la vez se
-resolvieron en 2.548 ms, pero ojo: eso es rendimiento agregado, no latencia:
-las últimas de la cola esperan. Para unas gafas de un solo usuario es
-irrelevante; si algún día hay varios a la vez, es el número a vigilar.
-
-#### El resto del TTS catalán: Matxa, alVoCat, StyleTTS2
-
-El BSC (Barcelona Supercomputing Center) y el Projecte AINA han publicado
-bastante TTS catalán, y es lo mejor que hay en calidad. El problema para las
-gafas es la velocidad.
-
-Medido aquí mismo, con la **misma locutora `ona`** que usa nuestra voz de Piper
-y la misma frase, en el mismo Xeon:
-
-| Sistema | Mediana | Tiempo real | Modelo | Licencia |
+| Sistema | Mediana | Temps real | Model | Llicència |
 | --- | --- | --- | --- | --- |
-| **Piper `upc_ona` medium** | **205 ms** | 26x | 63 MB | MIT + voz CC BY-SA 3.0 ES |
+| **Piper `upc_ona` medium** | **205 ms** | 26x | 63 MB | MIT + veu CC BY-SA 3.0 ES |
 | Matxa v2 central + WaveNeXt | 1.053 ms | 5,8x | 271 MB | Apache-2.0 |
 
-Matxa es **5 veces más lento** y el modelo pesa 4 veces más. A cambio suena
-mejor: es un Matcha-TTS (flow matching) con vocoder WaveNeXt, entrenado con
-festcat y openslr69, y trae 47 voces.
+Matxa és **5 vegades més lent** i el model pesa 4 vegades més. A canvi sona
+millor: és un Matcha-TTS (flow matching) amb vocoder WaveNeXt, entrenat amb
+festcat i openslr69, i porta 47 veus.
 
-Lo que hay publicado, por si cambian las prioridades:
+El que hi ha publicat, per si canvien les prioritats:
 
-| Modelo | Qué es | Licencia |
+| Model | Què és | Llicència |
 | --- | --- | --- |
-| `BSC-LT/matxa-tts-v2-ca-central-graphemes` | El de la tabla. 47 voces, 10 pasos | **Apache-2.0** |
-| `BSC-LT/matxa-tts-v2-ca-multiaccent-graphemes` | 16 voces, 4 dialectos, 20 pasos | **No comercial** |
-| `BSC-LT/styletts2-catalan-multispeaker` | StyleTTS2, más calidad y más lento | GPL-3.0 |
+| `BSC-LT/matxa-tts-v2-ca-central-graphemes` | El de la taula. 47 veus, 10 passos | **Apache-2.0** |
+| `BSC-LT/matxa-tts-v2-ca-multiaccent-graphemes` | 16 veus, 4 dialectes, 20 passos | **No comercial** |
+| `BSC-LT/styletts2-catalan-multispeaker` | StyleTTS2, més qualitat i més lent | GPL-3.0 |
 | `projecte-aina/matxa-tts-cat-multiaccent` | Matxa v1 | GPL-3.0 |
 | `projecte-aina/alvocat-vocos-22khz` | Vocoder de la v1 | CC |
 | `BSC-LT/vocos-mel-22khz` | Vocoder Vocos | Apache-2.0 |
 
-Dos avisos sobre licencias, que aquí importan más que de costumbre:
+Dos avisos sobre llicències, que aquí importen més del normal:
 
-- El **multiacento** (balear, valencià, nord-occidental, central) es el más
-  atractivo del catálogo, pero su licencia es `custom-ro-nc-openrail-m`: *"free
-  to use for non-commercial and research purposes. Commercial use is only
-  possible through licensing by the voice artists"*. Si Bonsai llega a ser un
-  producto, hay que hablar con el BSC y con La Fresca Produccions.
-- Las **v1 son GPL-3.0**, que es copyleft. La v2 central es Apache-2.0 y es la
-  única de las buenas sin ataduras.
+- El **multiaccent** (balear, valencià, nord-occidental, central) és el més
+  atractiu del catàleg, però la seva llicència és `custom-ro-nc-openrail-m`:
+  *"free to use for non-commercial and research purposes. Commercial use is only
+  possible through licensing by the voice artists"*. Si Bonsai arriba a ser un
+  producte, cal parlar amb el BSC i amb La Fresca Produccions.
+- Les **v1 són GPL-3.0**, que és copyleft. La v2 central és Apache-2.0 i és
+  l'única de les bones sense lligams.
 
-**Conclusión: se mantiene Piper.** 205 ms contra 1.053 ms es la diferencia
-entre unas gafas que responden y unas que se hacen esperar, y el cuello de
-botella del sistema ya lo tenemos en la visión. Si algún día la voz importa más
-que la latencia (una app de lectura, por ejemplo, donde esperar un segundo da
-igual), Matxa v2 central es la elección: mejor voz, 47 locutores y Apache-2.0.
+**Conclusió: es manté el Piper.** 205 ms contra 1.053 ms és la diferència entre
+unes ulleres que responen i unes que es fan esperar. Si algun dia la veu importa
+més que la latència, Matxa v2 central és l'elecció.
 
-#### Descartado: el TTS de Gemini
+#### Descartat: el TTS de Gemini
 
-Soporta catalán, pero medido con la misma frase es **inservible para esto**:
+Suporta català, però mesurat amb la mateixa frase és **inservible per a això**:
 
-| Modelo | Latencia |
+| Model | Latència |
 | --- | --- |
-| `gemini-2.5-flash-preview-tts` | 5.354 ms y 7.727 ms |
+| `gemini-2.5-flash-preview-tts` | 5.354 ms i 7.727 ms |
 | `gemini-3.1-flash-tts-preview` | 11.320 ms |
 
-Entre 4 y 55 veces más lento que Piper, y encima gastando de la misma cuota que
-la visión. La calidad de voz es buena, pero no a ese precio en latencia.
+Entre 4 i 55 vegades més lent que el Piper, i a sobre gastant de la mateixa
+quota que la visió.
 
-**El streaming de visión no compensa.** Medido con `--mode ttft`: el primer
-token de Gemini llega a los 1.246 ms y la respuesta completa a los 1.303 ms, es
-decir **57 ms de diferencia** en 3 trozos. El modelo escribe la frase corta de
-golpe, así que mandarla al TTS a trozos no ahorra nada apreciable. Donde sí se
-gana es en `/speak`, que ya va por trozos.
+#### Reduir la imatge: depèn del proveïdor
 
-#### Reducir la imagen: depende del proveedor (corrección)
+**Groq cobra per píxels**, així que reduir és la diferència entre poder provar i
+no poder:
 
-Aquí decía antes, sin matizar, que reducir la imagen no bajaba el coste.
-Resulta que **cada proveedor cobra de forma distinta**, así que la respuesta no
-es la misma para los dos. Ambas cosas están medidas:
-
-**Groq cobra por píxeles**, así que reducir es la diferencia entre poder probar
-y no poder:
-
-| Imagen | Tamaño | Latencia de visión | Tokens de entrada |
+| Imatge | Mida | Latència de visió | Tokens d'entrada |
 | --- | --- | --- | --- |
-| 3024x4032 (foto de móvil) | 3,1 MB | 2,4-3,8 s | ~50.000 |
-| 672x896 (lado largo 896 px) | 64 KB | **1,07-1,16 s** | **2.656** |
+| 3024x4032 (foto de mòbil) | 3,1 MB | 2,4-3,8 s | ~50.000 |
+| 672x896 (costat llarg 896 px) | 64 KB | **1,07-1,16 s** | **2.656** |
 
-Los 2.656 no son estimación: los dijo el propio error 429 de Groq
-(`Requested 2656`). Con la foto sin reducir se agotaron los 200.000 tokens del
-día en unas seis peticiones.
+Els 2.656 no són cap estimació: els va dir el mateix error 429 de Groq
+(`Requested 2656`). Amb la foto sense reduir es van esgotar els 200.000 tokens
+del dia en unes sis peticions.
 
-**Gemini cobra plano.** Medido con su endpoint `countTokens`, que es gratis: la
-misma foto cuesta **1.108 tokens tanto a 256x170 como a 2400x1597**. Reducirla
-no ahorra ni un token. Lo que cambia el precio es `mediaResolution`:
+**Gemini cobra pla.** Mesurat amb el seu endpoint `countTokens`, que és gratis:
+la mateixa foto costa **1.108 tokens tant a 256x170 com a 2400x1597**. Reduir-la
+no estalvia ni un token. El que canvia el preu és `mediaResolution`:
 
-| `mediaResolution` | Tokens | Resultado con la foto de prueba |
+| `mediaResolution` | Tokens | Resultat amb la foto de prova |
 | --- | --- | --- |
-| `LOW` | 286 | Confundió la plaza (dijo otra ciudad) |
-| `MEDIUM` | 577 | Misma respuesta que `HIGH` |
-| sin especificar (= `HIGH`) | 1.133 | Correcta |
+| `LOW` | 286 | Va confondre la plaça |
+| `MEDIUM` | 577 | Mateixa resposta que `HIGH` |
+| sense especificar (= `HIGH`) | 1.133 | Correcta |
 
-Se deja el valor por defecto de la API. `MEDIUM` dobla las pruebas que caben en
-la cuota y en esta foto acertó igual, pero es una sola foto: si lo bajas,
-compruébalo con las tuyas. Con `LOW` ya se vio perder precisión, y esto son unas
-gafas para orientarse.
+**Però amb Gemini també compensa reduir, encara que no estalviï tokens**: amb la
+mateixa foto de 3024x4032, la visió va passar de **2.342 ms sense reduir a
+988 ms a 896 px**. El que es paga amb la foto gran no són tokens, és pujar-la i
+processar-la.
 
-Así que reducir la imagen sigue mereciendo la pena, pero por otras dos razones
-que valen para los dos proveedores: se sube antes (importa con datos móviles y
-por BLE desde la ESP32) y en Groq baja la latencia de visión a un tercio.
-**Con Gemini también compensa, aunque no ahorre tokens.** Medido con la misma
-foto de 3024x4032: la visión pasó de **2.342 ms sin reducir a 988 ms a 896 px**.
-Lo que se paga con la foto grande no son tokens, es subirla y procesarla.
+Per això **el servidor la redueix ell mateix** (`imagen.py`), per als dos
+proveïdors. Costa poc:
 
-Por eso **el servidor la reduce él mismo** (`imagen.py`), para los dos
-proveedores y sin depender de que el cliente se acuerde. Cuesta poco:
-
-| Lado largo | CPU | 977 KB se quedan en |
+| Costat llarg | CPU | 977 KB es queden en |
 | --- | --- | --- |
 | 672 px | 168 ms | 60 KB |
-| **896 px** (por defecto) | **192 ms** | **92 KB** |
+| **896 px** (per defecte) | **192 ms** | **92 KB** |
 | 1120 px | 273 ms | 127 KB |
 
-Se ajusta con `IMAGE_MAX_SIDE` (0 lo desactiva), `IMAGE_RESIZE_FOR` para
-elegir a qué proveedores se aplica, o `"maxSide"` en cada petición. Respeta la
-orientación EXIF, así que las fotos de móvil dejan de describirse tumbadas, y
-si algo falla manda la original en vez de tirar la petición abajo.
+Respecta l'orientació EXIF, així que les fotos de mòbil deixen de descriure's
+tombades, i si alguna cosa falla envia l'original en comptes de tirar la
+petició avall.
 
-Cosas comprobadas que **no** ayudan, para no perder el tiempo con ellas:
+### Coses que sí que ajuden i ja estan fetes
 
-- **Partir el texto en frases y sintetizarlas en paralelo sale peor** (ver
-  abajo).
-- **En Groq no hay alternativa de modelo de visión**: solo `qwen/qwen3.6-27b`;
-  el resto de su catálogo es texto, transcripción o TTS. Para cambiar de modelo
-  hay que cambiar de proveedor, que es justo lo que permite el campo
-  `provider`.
-- **Partir el texto en frases y sintetizarlas en paralelo sale peor**: cada
-  frase abre su propio WebSocket con Microsoft (~1,5 s), y compitiendo entre
-  ellas el primer audio llegaba a los 2,4-5,6 s en vez de 1,5-2,0 s.
+- **Res de raonament pas a pas, als dos proveïdors.** `reasoning_effort: "none"`
+  al Groq no és decoratiu: sense això el model escriu un bloc `<think>` que es
+  menja els 150 tokens i torna la resposta truncada.
 
-Cosas que sí ayudan y ya están hechas:
+  A Gemini passa exactament el mateix i per això va
+  `thinkingConfig: {thinkingLevel: "minimal"}`. Amb `"medium"`: gasta ~140
+  tokens pensant, esgota els 150 de `maxOutputTokens` i torna
+  `finishReason: MAX_TOKENS` amb la frase tallada a mitja paraula. Compte amb el
+  lloc exacte del camp: `thinkingLevel` solt a `generationConfig` el rebutja amb
+  un 400.
+- **Una sola connexió amb el proveïdor** per a tot el procés: el handshake TLS
+  són ~220 ms mesurats que ara es paguen un cop. A més s'obre en arrencar
+  (`vision.warmup()`), i el escalfament demana un llistat de models: no gasta ni
+  un token.
+- **Respostes d'1 o 2 frases** (prompt + `max_completion_tokens: 150`): escurça
+  les dues etapes que escalen amb la longitud. Mesurat amb la mateixa foto,
+  passar de 49 a 23 paraules baixa la locució de ~21 s a ~10 s.
+- **No inventar-se topònims.** Amb una foto d'una plaça de Reus, el model deia
+  "plaça de l'Ajuntament de Vilanova i la Geltrú" i, amb una altra resolució,
+  "Plaza Real de Barcelona". Cap de les dues correcta, i dites amb tot l'aplom.
+  Qui porta les ulleres no té manera de saber que és mentida, així que el prompt
+  ara prohibeix endevinar noms propis: només els diu si els llegeix en un
+  rètol.
 
-- **Nada de razonamiento paso a paso, en los dos proveedores.**
-  `reasoning_effort: "none"` en `groq_vision.py` no es decorativo: sin él el
-  modelo escribe un bloque `<think>` que se come los 150 tokens y devuelve la
-  respuesta truncada (medido: 2,28 s y respuesta inservible, contra 1,26 s y
-  respuesta correcta).
+**Descartat amb dades: el streaming de la visió cap al TTS.** El primer token
+arriba a 1.246 ms i la frase sencera a 1.303 ms: 57 ms de diferència. El model
+escriu la frase curta de cop, així que enviar-la al TTS a trossos no estalvia
+res apreciable.
 
-  En Gemini pasa exactamente lo mismo y por eso va
-  `thinkingConfig: {thinkingLevel: "minimal"}`. Medido con `thinkingLevel:
-  "medium"`: gasta ~140 tokens pensando, agota los 150 de `maxOutputTokens` y
-  devuelve `finishReason: MAX_TOKENS` con la frase cortada a media palabra
-  («Tienes delante la Plaça de»). Con `minimal`: 0 tokens de pensamiento,
-  respuesta completa y 838 ms de visión en vez de 1.107-1.226 ms.
+#### Mesurar-ho tu mateix: `bench_latency.py`
 
-  Cuidado con el sitio exacto del campo: `thinkingLevel` suelto en
-  `generationConfig` lo rechaza con un 400 («Unknown name "thinkingLevel"»).
-  Tiene que ir anidado en `thinkingConfig`.
-- **Una sola conexión con el proveedor** para todo el proceso, en vez de abrir
-  una por foto: el handshake TLS son ~220 ms medidos que ahora se pagan una vez.
-  Además se abre al arrancar (`vision.warmup()`), así que ni siquiera los paga
-  la primera persona que use las gafas. El calentamiento pide un listado de
-  modelos: no gasta ni un token.
-- **Respuestas de 1 o 2 frases** (prompt + `max_completion_tokens: 150`):
-  acorta las dos etapas que escalan con la longitud. Medido con la misma foto,
-  pasar de 49 a 23 palabras baja la locución de ~21 s a ~10 s.
-- **`/speak` va por trozos**, así que se puede empezar a reproducir en cuanto
-  llega el primero en vez de esperar el MP3 entero (~1,3 s menos de espera).
-
-**El camino más rápido** si la app quiere reaccionar cuanto antes: pedir
-`/describe` con `"audio": false` (texto en ~0,9 s, se puede mostrar ya) y a
-continuación `/speak` con ese texto, que va llegando a trozos. Así no se espera
-a tener todo el audio generado antes de empezar a oír algo.
-
-#### Medirlo tú mismo: `bench_latency.py`
-
-Mide el desglose (reducir, codificar, red, visión, TTS) y **por defecto no gasta
-cuota**: enseña cuántas peticiones haría y cuántos tokens costaría, y no llama a
-nadie hasta que se lo confirmas con `--yes`.
+Mesura el desglossament (reduir, codificar, xarxa, visió, TTS) i **per defecte
+no gasta quota**: ensenya quantes peticions faria i quants tokens costaria, i no
+crida ningú fins que li ho confirmes amb `--yes`.
 
 ```sh
-# 0 tokens: comprueba el código (formato de imagen, 429, payloads, errores)
+# 0 tokens: comprova el codi (format d'imatge, 429, payloads, errors)
 python bench_latency.py --selftest
 
-# 0 tokens: ensayo, dice lo que costaría
+# 0 tokens: assaig, diu què costaria
 python bench_latency.py --provider both --image foto.jpg
 
-# Gasta cuota: lo mínimo para tener el dato
-python bench_latency.py --provider gemini --image foto.jpg --only-small --yes
+# Gasta quota: el mínim per tenir la dada
+python bench_latency.py --provider groq --image foto.jpg --only-small --yes
 
-# Compara proveedores con la misma foto
+# Compara proveïdors amb la mateixa foto
 python bench_latency.py --provider both --image foto.jpg --sizes 896 --yes
 
-# Time to first token: ¿merece la pena mandar el texto al TTS a trozos?
+# Time to first token
 python bench_latency.py --provider gemini --image foto.jpg --mode ttft --yes
 ```
 
-Se para en cuanto ve un 429, para no insistir contra una cuota agotada, y aborta
-antes de empezar si el plan pasa de `--budget` (20.000 tokens por defecto).
-Necesita Pillow (`pip install pillow`) para las variantes reducidas; sin él mide
-solo la imagen original.
+S'atura tot just veure un 429, per no insistir contra una quota esgotada, i
+avorta abans de començar si el pla passa de `--budget` (20.000 tokens per
+defecte).
 
-El modo `ttft` es el que dice si queda latencia por ganar: si el primer token
-llega mucho antes de que termine la frase, conviene ir mandando el texto al TTS
-a medida que llega en vez de esperar la respuesta completa.
+### Altres apunts
 
-(La trampa de la caché de edge-tts está medida más arriba: 430 ms con texto
-repetido frente a 1.320 ms con texto nuevo.)
-
-### Otros apuntes
-
-- **Modelo de Groq**: Groq renombra y retira modelos con frecuencia. Si
-  `/describe` empieza a dar error 502, comprueba el nombre vigente en
-  <https://console.groq.com/docs/models> y cámbialo con `GROQ_VISION_MODEL`,
-  sin tocar el código.
-- **Límites del plan gratuito de Groq**: cada foto gasta ~1.800 tokens, y el
-  plan da 8.000 tokens por minuto y 200.000 al día. Salen unas **4 fotos por
-  minuto y ~110 al día**. Como el coste por imagen es fijo, mandarla más pequeña
-  no da más margen: si las gafas se van a usar de verdad a diario, hace falta el
-  plan de pago.
-- **edge-tts** usa un protocolo que Microsoft no documenta oficialmente (el
-  mismo que la librería de Python homónima, muy usada y mantenida). Funciona
-  bien, pero conviene saber que podría romperse si Microsoft lo cambiara.
-- **Memoria**: por ahora solo guarda lo que se le manda explícitamente a
-  `POST /memory`. El siguiente paso natural sería pedirle al modelo que
-  devuelva un campo `{"remember": "..."}` y guardarlo solo.
-- **Límite de recuerdos**: 50 por dispositivo (`MAX_ITEMS` en `memory.py`),
-  para que el prompt no crezca sin control.
+- **Model de Groq**: Groq reanomena i retira models sovint. Si `/describe`
+  comença a donar error 502, comprova el nom vigent a
+  <https://console.groq.com/docs/models> i canvia'l amb `GROQ_VISION_MODEL`,
+  sense tocar el codi.
+- **Límits del pla gratuït de Groq**: a 896 px cada foto gasta **2.656 tokens**,
+  i el pla dóna 8.000 tokens per minut i 200.000 al dia. Surten unes **3 fotos
+  per minut i ~75 al dia**. El límit que molesta en el dia a dia és el del
+  minut, no el del dia.
+- **edge-tts** fa servir un protocol que Microsoft no documenta oficialment.
+  Funciona bé, però convé saber que es podria trencar si Microsoft el canviés.
+  Amb el Piper per defecte, això ha deixat de ser un risc del camí principal.
+- **Memòria**: de moment només desa el que se li envia explícitament a
+  `POST /memory` o des de la pàgina `/memoria`. El següent pas natural seria
+  demanar al model que tornés un camp `{"remember": "..."}` i desar-ho sol.
+- **Límit de records**: 50 per dispositiu (`MAX_ITEMS` a `memory.py`), perquè el
+  prompt no creixi sense control.

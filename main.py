@@ -106,6 +106,10 @@ class MemoryRequest(BaseModel):
     fact: str
 
 
+class MemoryEdit(BaseModel):
+    fact: str
+
+
 # --------------------------------------------------------------------------
 # Prompt
 # --------------------------------------------------------------------------
@@ -152,19 +156,42 @@ def build_system_prompt(lang: str, memory_context: str) -> str:
 # --------------------------------------------------------------------------
 # Endpoints
 # --------------------------------------------------------------------------
+def _pagina(nombre: str) -> HTMLResponse:
+    """Sirve un HTML de static/. Sin token: son páginas, no datos.
+
+    Lo que hay detrás sí está protegido: las dos piden los datos a la API con
+    la cabecera X-API-Token, así que servir el HTML no expone nada.
+    """
+    ruta = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", nombre)
+    try:
+        with open(ruta, encoding="utf-8") as f:
+            return HTMLResponse(f.read())
+    except FileNotFoundError:
+        raise HTTPException(404, f"Falta static/{nombre} en el servidor.") from None
+
+
+# Dos nombres para la misma página: "provar" es como se dice en catalán, que es
+# el idioma del proyecto, y "probar" es el que ya está escrito en sitios y en
+# los marcadores de alguien. Cambiar uno por otro solo rompería enlaces.
+@app.get("/provar", response_class=HTMLResponse)
 @app.get("/probar", response_class=HTMLResponse)
 def probar() -> HTMLResponse:
-    """Página de prueba para el móvil. Sin token: es solo HTML.
+    """Página de prueba para el móvil: hace una foto y reproduce la respuesta.
 
     Se sirve desde el propio backend para que no haya CORS ni haya que montar
     nada aparte: se abre la IP del servidor en el móvil y ya está.
     """
-    pagina = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "probar.html")
-    try:
-        with open(pagina, encoding="utf-8") as f:
-            return HTMLResponse(f.read())
-    except FileNotFoundError:
-        raise HTTPException(404, "Falta static/probar.html en el servidor.") from None
+    return _pagina("probar.html")
+
+
+@app.get("/memoria", response_class=HTMLResponse)
+def memoria() -> HTMLResponse:
+    """Interfaz visual para ver y editar la memoria de cada dispositivo.
+
+    Hasta ahora la base de datos solo se podía tocar a golpe de curl y había
+    que saberse los deviceId de memoria.
+    """
+    return _pagina("memoria.html")
 
 
 @app.get("/health")
@@ -446,9 +473,31 @@ def add_memory(req: MemoryRequest) -> dict[str, Any]:
     return {"ok": True, "item": item}
 
 
+@app.get("/memory", dependencies=[Depends(require_token)])
+def list_devices() -> dict[str, Any]:
+    """Todos los dispositivos con recuerdos, y el estado de la base de datos.
+
+    Sin esto no había forma de saber qué deviceId existen: había que
+    acordarse de ellos.
+    """
+    return {"devices": memory.list_devices(), "stats": memory.stats()}
+
+
 @app.get("/memory/{device_id}", dependencies=[Depends(require_token)])
 def get_memories(device_id: str) -> dict[str, Any]:
-    return {"memories": memory.list_memories(device_id)}
+    return {"deviceId": device_id, "memories": memory.list_memories(device_id)}
+
+
+@app.patch("/memory/{device_id}/{memory_id}", dependencies=[Depends(require_token)])
+def edit_memory(device_id: str, memory_id: str, req: MemoryEdit) -> dict[str, Any]:
+    """Corrige el texto de un recuerdo, sin borrarlo y volverlo a crear."""
+    texto = req.fact.strip()
+    if not texto:
+        raise HTTPException(400, "El recuerdo no puede quedar vacío.")
+    item = memory.update_memory(device_id, memory_id, texto)
+    if item is None:
+        raise HTTPException(404, "No se encontró ese recuerdo.")
+    return {"ok": True, "item": item}
 
 
 @app.delete("/memory/{device_id}/{memory_id}", dependencies=[Depends(require_token)])
@@ -457,6 +506,13 @@ def remove_memory(device_id: str, memory_id: str) -> dict[str, Any]:
     if not deleted:
         raise HTTPException(404, "No se encontró ese recuerdo.")
     return {"ok": True}
+
+
+@app.delete("/memory/{device_id}", dependencies=[Depends(require_token)])
+def clear_device(device_id: str) -> dict[str, Any]:
+    """Vacía un dispositivo entero. Pide confirm=true para no borrar sin querer."""
+    borrados = memory.clear_device(device_id)
+    return {"ok": True, "deleted": borrados}
 
 
 @app.get("/voices", dependencies=[Depends(require_token)])
