@@ -146,3 +146,27 @@ Descartado: el **TTS de Gemini**. Soporta catalán y suena bien, pero 5.354, 7.7
 
 Ya arreglado: el timeout con `str(e)` vacío (ahora `vision.describe_error`) y el
 `data:image/jpeg` fijo (ahora `vision.sniff_mime`).
+
+## TTS catalán del BSC y Projecte AINA: mirado y descartado (por ahora)
+
+Medido con la **misma locutora `ona`** que usa Piper y la misma frase, mismo Xeon:
+
+- Piper `upc_ona` medium: **205 ms**, RTF 26x, modelo de 63 MB.
+- Matxa v2 central + WaveNeXt (`BSC-LT/matxa-tts-v2-ca-central-graphemes`):
+  **1.053 ms**, RTF 5,8x, modelo de 271 MB.
+
+Cinco veces más lento. Suena mejor (Matcha-TTS con flow matching, 47 voces), pero para
+las gafas manda la latencia. Se mantiene Piper.
+
+Cómo ejecutarlo si hace falta: el Space `BSC-LT/matxa-tts-v2` lleva los ONNX con el
+vocoder ya incluido, y se corre con onnxruntime igual que Piper. Entradas: `x`,
+`x_lengths`, `scales` (temperature, length_scale), `spks`. La salida útil es la segunda
+(`hfwaveform`), float a 22050 Hz. Hace falta el módulo `text/` del Space para el cleaner
+`catalan_text`, más `unidecode` y `num2words`.
+
+Ojo con las licencias:
+
+- v2 central: **Apache-2.0**, la única buena sin ataduras.
+- v2 multiacento (balear, valencià, nord-occidental): **no comercial**, hay que licenciar
+  con los locutores a través del BSC y La Fresca Produccions.
+- Todas las v1 de projecte-aina y el StyleTTS2 catalán: **GPL-3.0**.

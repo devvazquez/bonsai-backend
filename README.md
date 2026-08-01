@@ -732,6 +732,51 @@ resolvieron en 2.548 ms, pero ojo: eso es rendimiento agregado, no latencia:
 las últimas de la cola esperan. Para unas gafas de un solo usuario es
 irrelevante; si algún día hay varios a la vez, es el número a vigilar.
 
+#### El resto del TTS catalán: Matxa, alVoCat, StyleTTS2
+
+El BSC (Barcelona Supercomputing Center) y el Projecte AINA han publicado
+bastante TTS catalán, y es lo mejor que hay en calidad. El problema para las
+gafas es la velocidad.
+
+Medido aquí mismo, con la **misma locutora `ona`** que usa nuestra voz de Piper
+y la misma frase, en el mismo Xeon:
+
+| Sistema | Mediana | Tiempo real | Modelo | Licencia |
+| --- | --- | --- | --- | --- |
+| **Piper `upc_ona` medium** | **205 ms** | 26x | 63 MB | MIT + voz CC BY-SA 3.0 ES |
+| Matxa v2 central + WaveNeXt | 1.053 ms | 5,8x | 271 MB | Apache-2.0 |
+
+Matxa es **5 veces más lento** y el modelo pesa 4 veces más. A cambio suena
+mejor: es un Matcha-TTS (flow matching) con vocoder WaveNeXt, entrenado con
+festcat y openslr69, y trae 47 voces.
+
+Lo que hay publicado, por si cambian las prioridades:
+
+| Modelo | Qué es | Licencia |
+| --- | --- | --- |
+| `BSC-LT/matxa-tts-v2-ca-central-graphemes` | El de la tabla. 47 voces, 10 pasos | **Apache-2.0** |
+| `BSC-LT/matxa-tts-v2-ca-multiaccent-graphemes` | 16 voces, 4 dialectos, 20 pasos | **No comercial** |
+| `BSC-LT/styletts2-catalan-multispeaker` | StyleTTS2, más calidad y más lento | GPL-3.0 |
+| `projecte-aina/matxa-tts-cat-multiaccent` | Matxa v1 | GPL-3.0 |
+| `projecte-aina/alvocat-vocos-22khz` | Vocoder de la v1 | CC |
+| `BSC-LT/vocos-mel-22khz` | Vocoder Vocos | Apache-2.0 |
+
+Dos avisos sobre licencias, que aquí importan más que de costumbre:
+
+- El **multiacento** (balear, valencià, nord-occidental, central) es el más
+  atractivo del catálogo, pero su licencia es `custom-ro-nc-openrail-m`: *"free
+  to use for non-commercial and research purposes. Commercial use is only
+  possible through licensing by the voice artists"*. Si Bonsai llega a ser un
+  producto, hay que hablar con el BSC y con La Fresca Produccions.
+- Las **v1 son GPL-3.0**, que es copyleft. La v2 central es Apache-2.0 y es la
+  única de las buenas sin ataduras.
+
+**Conclusión: se mantiene Piper.** 205 ms contra 1.053 ms es la diferencia
+entre unas gafas que responden y unas que se hacen esperar, y el cuello de
+botella del sistema ya lo tenemos en la visión. Si algún día la voz importa más
+que la latencia (una app de lectura, por ejemplo, donde esperar un segundo da
+igual), Matxa v2 central es la elección: mejor voz, 47 locutores y Apache-2.0.
+
 #### Descartado: el TTS de Gemini
 
 Soporta catalán, pero medido con la misma frase es **inservible para esto**:
