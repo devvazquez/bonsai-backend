@@ -13,7 +13,7 @@ if [ ! -f .env ]; then
   cp .env.example .env
   echo
   echo "He creado el fichero .env a partir de .env.example."
-  echo "Ábrelo, pon tu GROQ_API_KEY y vuelve a ejecutar este script."
+  echo "Ábrelo, pon tu GEMINI_API_KEY y vuelve a ejecutar este script."
   echo
   exit 1
 fi
@@ -35,14 +35,23 @@ set -a
 . ./.env
 set +a
 
-if [ -z "${GROQ_API_KEY:-}" ] || [ "$GROQ_API_KEY" = "tu-api-key-de-groq" ]; then
+# Solo se avisa de la clave del proveedor que se vaya a usar de verdad.
+PROVEEDOR="${VISION_PROVIDER:-gemini}"
+if [ "$PROVEEDOR" = "groq" ]; then
+  CLAVE="${GROQ_API_KEY:-}"; ESPERADO="tu-api-key-de-groq"; NOMBRE="GROQ_API_KEY"
+else
+  CLAVE="${GEMINI_API_KEY:-}"; ESPERADO="tu-api-key-de-gemini"; NOMBRE="GEMINI_API_KEY"
+fi
+if [ -z "$CLAVE" ] || [ "$CLAVE" = "$ESPERADO" ]; then
   echo
-  echo "Falta GROQ_API_KEY en el .env: /describe dará error 500."
-  echo "El resto (/speak, /memory, /voices) sí funcionará."
+  echo "Falta $NOMBRE en el .env: /describe y /look darán error 500."
+  echo "El resto (/speak, /memory, /voices, /probar) sí funcionará:"
+  echo "la voz es Piper y va en local, sin ninguna clave."
 fi
 
 echo
 echo "  Servidor:      http://127.0.0.1:8080"
+echo "  Desde el móvil: http://127.0.0.1:8080/probar"
 echo "  Documentación: http://127.0.0.1:8080/docs"
 echo "  Para probarlo: python test_bonsai.py  (en otra terminal)"
 echo "  Ctrl+C para parar."

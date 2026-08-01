@@ -12,14 +12,16 @@ reproduce el audio.
 
 ```mermaid
 flowchart LR
-    A["Gafas<br/>(ESP32-S3)"] -- foto por BLE --> B["App web"]
-    B -- "POST /describe<br/>(imagen en base64)" --> C["Este backend"]
-    C -- imagen + contexto --> D["Groq<br/>(Qwen VL)"]
+    A["Gafas<br/>(ESP32-S3 + OV3660)"] -- "POST /look<br/>(foto en base64)" --> C["Este backend"]
+    B["App web / móvil"] -- "POST /describe" --> C
+    C -- reduce a 896 px --> C
+    C -- imagen + contexto --> D["Gemini o Groq"]
     D -- descripción --> C
-    C -- texto --> E["edge-tts<br/>(voz catalana)"]
-    E -- MP3 --> C
+    C -- texto --> E["Piper<br/>(en local, voz catalana)"]
+    E -- audio --> C
+    C -- "PCM16 en streaming" --> A
     C -- "{ text, audio }" --> B
-    B -- audio por BLE --> A
+    A -- I2S --> F["MAX98357A"]
 ```
 
 En cada petición el servidor añade al prompt la fecha de hoy y los recuerdos
@@ -29,11 +31,16 @@ Las respuestas son **de 1 o 2 frases** a propósito: todo lo que dice el modelo
 hay que escucharlo después, así que cada frase de más son segundos de espera.
 Si necesitas más detalle, se pide con el campo `prompt`.
 
-- **Visión**: Groq con un modelo Qwen VL (~1-2 s).
-- **Voz**: edge-tts, las voces neuronales de Microsoft, gratuitas y con
-  **catalán** (`ca-ES-JoanaNeural` por defecto).
+- **Visión**: dos proveedores intercambiables, **Gemini** (por defecto, cuota
+  holgada) y **Groq** (más rápido: 552 ms medidos, pero 8.000 tokens/minuto).
+- **Voz**: **Piper** en local (por defecto), voz catalana `ca_ES-upc_ona-medium`
+  de la UPC, 205 ms y sin depender de nadie. edge-tts sigue disponible.
 - **Memoria**: SQLite, un fichero, sin servicios externos.
 - **Idiomas**: `ca` (por defecto), `es`, `en`.
+
+Con la configuración más rápida, el **primer byte de audio sale a ~1,0-1,8 s**
+desde que llega la foto. Todos los números de este README están medidos, no
+estimados; el desglose está en [Latencia](#latencia-dónde-se-va-el-tiempo).
 
 ---
 
@@ -53,7 +60,11 @@ Si necesitas más detalle, se pide con el campo `prompt`.
 
 No hace falta Docker ni servidor: funciona entero en local. Solo necesitas
 **Python 3.11 o superior** y una API key gratuita de
-[console.groq.com](https://console.groq.com).
+[aistudio.google.com/apikey](https://aistudio.google.com/apikey) (o de
+[console.groq.com](https://console.groq.com) si prefieres Groq).
+
+La voz **no** necesita ninguna clave: Piper sintetiza en local. La primera vez
+que arranca se baja solo el modelo de la voz catalana (63 MB) a `voices/`.
 
 ### Windows (PowerShell)
 
@@ -64,7 +75,7 @@ cd bonsai-backend
 ```
 
 La primera vez el script crea el `.env` y se para para que pongas tu
-`GROQ_API_KEY` dentro. Lo vuelves a ejecutar y ya arranca.
+`GEMINI_API_KEY` dentro. Lo vuelves a ejecutar y ya arranca.
 
 > Si PowerShell se queja de que no puede ejecutar scripts:
 > `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`
@@ -87,8 +98,9 @@ Cuando esté en marcha:
 - API: <http://127.0.0.1:8080>
 - Documentación interactiva (Swagger, se puede probar desde el navegador):
   <http://127.0.0.1:8080/docs>
-- Comprobación rápida: <http://127.0.0.1:8080/health> debe devolver
-  `{"ok":true,"groqKeyConfigured":true,...}`
+- Página de prueba para el móvil: <http://127.0.0.1:8080/probar>
+- Comprobación rápida: <http://127.0.0.1:8080/health> dice qué proveedor de
+  visión hay activo, si su clave está puesta y si Piper cargó bien
 
 En local no hace falta token (`BONSAI_API_TOKEN` vacío). La base de datos de
 los recuerdos se crea en `./data/bonsai.db`.
@@ -100,7 +112,7 @@ los recuerdos se crea en `./data/bonsai.db`.
 python -m venv .venv
 .venv/Scripts/activate        # Windows:  .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-cp .env.example .env          # y pon dentro tu GROQ_API_KEY
+cp .env.example .env          # y pon dentro tu GEMINI_API_KEY
 uvicorn main:app --host 127.0.0.1 --port 8080 --reload
 ```
 
@@ -133,9 +145,13 @@ bonsai> config token el-token-de-la-vps
 bonsai> help
 ```
 
-`describe` guarda el MP3 en la carpeta actual, lo abre con el reproductor por
-defecto y muestra el desglose de tiempos: cuánto tarda en codificar la imagen,
-la visión, el TTS y la ida y vuelta completa.
+`describe` guarda el audio en la carpeta actual con la extensión que toque
+(WAV con Piper, MP3 con edge-tts), lo abre con el reproductor por defecto y
+muestra el desglose de tiempos: codificar la imagen, la visión, el TTS y la ida
+y vuelta completa.
+
+Se puede cambiar de proveedor sobre la marcha con `config provider groq` y
+`config tts edge`, útil para comparar sin reiniciar el servidor.
 
 El repositorio incluye una `image.png` de ejemplo para probar sin buscar fotos.
 
@@ -147,11 +163,12 @@ El repositorio incluye una `image.png` de ejemplo para probar sin buscar fotos.
 | --- | --- | --- |
 | `POST` | `/describe` | El endpoint principal: imagen → texto + audio (JSON, para navegadores) |
 | `POST` | `/look` | Lo mismo para la ESP32: audio en crudo y en streaming, listo para el I2S |
-| `POST` | `/speak?text=...&lang=ca` | Solo texto a voz. Devuelve el MP3 en crudo |
+| `POST` | `/speak?text=...&lang=ca` | Solo texto a voz. Devuelve el audio en crudo (WAV con Piper, MP3 con edge-tts) |
 | `POST` | `/memory` | `{deviceId, fact}` — guarda un recuerdo |
 | `GET` | `/memory/{deviceId}` | Lista los recuerdos del dispositivo |
 | `DELETE` | `/memory/{deviceId}/{id}` | Borra un recuerdo (vale el prefijo del id) |
 | `GET` | `/voices?prefix=ca` | Voces disponibles para un idioma |
+| `GET` | `/probar` | Página de prueba para el móvil. **Sin autenticación** |
 | `GET` | `/health` | Estado del servicio. **Sin autenticación** |
 
 ### `POST /describe`
@@ -162,7 +179,7 @@ El repositorio incluye una `image.png` de ejemplo para probar sin buscar fotos.
   "deviceId": "bonsai-01",
   "prompt": "¿Qué dice el cartel?",   // opcional; por defecto, descripción general
   "lang": "ca",                        // opcional: ca | es | en
-  "voice": "ca-ES-EnricNeural",        // opcional: fuerza una voz concreta
+  "voice": "ca_ES-upc_ona-medium",     // opcional: fuerza una voz concreta
   "audio": true,                       // a false devuelve solo texto (mucho más rápido)
   "provider": "gemini",                // opcional: gemini | groq. Por defecto, VISION_PROVIDER
   "tts": "piper"                       // opcional: piper | edge. Por defecto, TTS_PROVIDER
@@ -298,7 +315,7 @@ nano .env
 ```
 
 ```ini
-GROQ_API_KEY=gsk_la_clave_real_de_groq
+GEMINI_API_KEY=la_clave_real_de_gemini
 BONSAI_API_TOKEN=el-token-que-acabas-de-generar
 BONSAI_DOMAIN=bonsai.tudominio.com
 ALLOWED_ORIGINS=https://la-app-web-de-bonsai.com
@@ -358,16 +375,35 @@ curl http://localhost:8080/health
 
 Tiene que responder:
 
-```json
-{"ok":true,"groqKeyConfigured":true,"authRequired":true}
+```jsonc
+{
+  "ok": true,
+  "authRequired": true,
+  "defaultProvider": "gemini",
+  "providers": {
+    "gemini": { "model": "gemini-3.1-flash-lite", "keyConfigured": true },
+    "groq":   { "model": "qwen/qwen3.6-27b",      "keyConfigured": false }
+  },
+  "tts": {
+    "configured": "piper",
+    "active": "piper",              // si dice "edge" es que Piper falló
+    "format": "wav",
+    "piper": { "ok": true, "error": null, "localVoices": ["ca_ES-upc_ona-medium"] }
+  }
+}
 ```
 
-Si `groqKeyConfigured` sale `false`, la clave no ha llegado al contenedor:
-revisa el `.env` y reinicia. Desde fuera, `curl https://bonsai.tudominio.com/health`.
+Tres cosas que mirar aquí:
 
-La prueba de verdad es desde tu ordenador, con la terminal de pruebas
-(sección 2): `config url https://bonsai.tudominio.com`, `config token ...`,
-y luego `describe foto.jpg`.
+- Si `keyConfigured` sale `false` para el proveedor que usas, la clave no ha
+  llegado al contenedor: revisa el `.env` y reinicia.
+- Si `tts.active` no coincide con `tts.configured`, Piper no arrancó y se está
+  usando edge-tts. El motivo está en `tts.piper.error`.
+- `localVoices` vacío significa que el modelo de voz no se ha bajado todavía.
+
+Desde fuera, `curl https://bonsai.tudominio.com/health`. La prueba de verdad es
+abrir **`https://bonsai.tudominio.com/probar`** en el móvil y hacer una foto, o
+usar la terminal de pruebas (sección 2).
 
 ### 4.4. Día a día
 
@@ -407,10 +443,16 @@ const resp = await fetch("https://bonsai.tudominio.com/describe", {
   }),
 });
 
-const { text, audio } = await resp.json();
-// audio es un MP3 en base64: listo para reproducir o mandar por BLE
-new Audio("data:audio/mpeg;base64," + audio).play();
+const { text, audio, audioFormat } = await resp.json();
+// audioFormat es "wav" con Piper y "mp3" con edge-tts. No lo des por hecho:
+// si lo fijas a mpeg, el navegador no reproducirá el WAV de Piper.
+const tipo = audioFormat === "wav" ? "audio/wav" : "audio/mpeg";
+new Audio(`data:${tipo};base64,${audio}`).play();
 ```
+
+Si solo quieres probarlo desde el móvil sin escribir nada, el servidor ya trae
+una página lista en **`/probar`**: hace la foto con la cámara, la reduce antes
+de subirla y enseña el desglose de tiempos.
 
 ### Para la ESP32-S3: `POST /look`
 

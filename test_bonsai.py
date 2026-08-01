@@ -35,6 +35,10 @@ API_URL = "http://127.0.0.1:8080"  # en producción: https://bonsai.tudominio.co
 DEVICE_ID = "bonsai-01"
 LANG = "ca"  # 'ca' catalán, 'es' castellano, 'en' inglés
 API_TOKEN = ""  # el mismo BONSAI_API_TOKEN del servidor (vacío = sin auth)
+# Vacíos = lo que tenga configurado el servidor (gemini + piper por defecto).
+# Se cambian en marcha con "config provider groq" y "config tts edge".
+PROVIDER = ""   # '' | 'gemini' | 'groq'
+TTS = ""        # '' | 'piper' | 'edge'
 TIMEOUT = 60
 
 
@@ -92,6 +96,10 @@ def cmd_describe(args: list[str]) -> None:
     body = {"deviceId": DEVICE_ID, "image": img_b64, "lang": LANG}
     if prompt:
         body["prompt"] = prompt
+    if PROVIDER:
+        body["provider"] = PROVIDER
+    if TTS:
+        body["tts"] = TTS
 
     print(f"📤 Enviando ({len(img_bytes)/1024:.1f} KB, codificada en {ms(t_encode)})...")
     data, elapsed = call("/describe", "POST", body)
@@ -100,14 +108,17 @@ def cmd_describe(args: list[str]) -> None:
 
     print(f"✅ Respuesta en {ms(elapsed)}")
     print(f"📝 {data['text']}")
+    print(f"👁️  {data.get('provider')} · {data.get('model')}")
 
     t_decode = 0.0
     if data.get("audio"):
-        out = f"respuesta_{int(time.time())}.mp3"
+        # La extensión la manda el servidor: Piper devuelve WAV y edge-tts MP3.
+        ext = data.get("audioFormat", "mp3")
+        out = f"respuesta_{int(time.time())}.{ext}"
         t1 = time.perf_counter()
         open(out, "wb").write(base64.b64decode(data["audio"]))
         t_decode = time.perf_counter() - t1
-        print(f"🔊 {out} (voz: {data.get('voice')})")
+        print(f"🔊 {out} ({data.get('tts')} · {data.get('voice')})")
         play(out)
 
     print("\n⏱️  Tiempos:")
@@ -125,12 +136,15 @@ def cmd_speak(args: list[str]) -> None:
         print("Uso: speak <texto>")
         return
     text = " ".join(args)
-    qs = urllib.parse.urlencode({"text": text, "lang": LANG})
-    audio, elapsed = call(f"/speak?{qs}", "POST", raw=True)
+    params = {"text": text, "lang": LANG}
+    if TTS:
+        params["tts_provider"] = TTS
+    audio, elapsed = call(f"/speak?{urllib.parse.urlencode(params)}", "POST", raw=True)
     if not audio:
         return
-    out = f"voz_{int(time.time())}.mp3"
-    open(out, "wb").write(audio)
+    # Sin leer la cabecera no se sabe el formato, pero un WAV empieza por RIFF.
+    ext = "wav" if audio[:4] == b"RIFF" else "mp3"
+    out = f"voz_{int(time.time())}.{ext}"
     print(f"🔊 {out} ({len(audio)/1024:.1f} KB en {ms(elapsed)})")
     play(out)
 
@@ -173,20 +187,34 @@ def cmd_voices(args: list[str]) -> None:
 
 def cmd_health(_: list[str]) -> None:
     data, elapsed = call("/health")
-    if data:
-        print(f"💚 {data} ({ms(elapsed)})")
+    if not data:
+        return
+    print(f"💚 servidor vivo ({ms(elapsed)})")
+    for nombre, p in (data.get("providers") or {}).items():
+        marca = "◀ por defecto" if nombre == data.get("defaultProvider") else ""
+        clave = "clave ok" if p.get("keyConfigured") else "SIN CLAVE"
+        print(f"   👁️  {nombre:<7} {p.get('model'):<24} {clave:<10} {marca}")
+    t = data.get("tts") or {}
+    aviso = ""
+    if t.get("active") != t.get("configured"):
+        # Es el caso que importa ver: Piper no arrancó y se tiró de edge-tts.
+        aviso = f"  ⚠️  se pidió {t.get('configured')}: {(t.get('piper') or {}).get('error')}"
+    print(f"   🔊 {t.get('active')} ({t.get('format')}){aviso}")
 
 
 def cmd_config(args: list[str]) -> None:
-    global API_URL, DEVICE_ID, LANG, API_TOKEN
+    global API_URL, DEVICE_ID, LANG, API_TOKEN, PROVIDER, TTS
     if not args:
         shown = (API_TOKEN[:4] + "…") if API_TOKEN else "(sin token)"
         print(f"API_URL   = {API_URL}\nDEVICE_ID = {DEVICE_ID}\n"
-              f"LANG      = {LANG}\nTOKEN     = {shown}")
+              f"LANG      = {LANG}\nTOKEN     = {shown}\n"
+              f"PROVIDER  = {PROVIDER or '(el del servidor)'}\n"
+              f"TTS       = {TTS or '(el del servidor)'}")
         return
     key, *rest = args
     if not rest:
-        print("Uso: config url <url> | device <id> | lang <ca|es|en> | token <token>")
+        print("Uso: config url <url> | device <id> | lang <ca|es|en> | token <token>"
+              " | provider <gemini|groq> | tts <piper|edge>")
         return
     if key == "url":
         API_URL = rest[0].rstrip("/")
@@ -196,8 +224,13 @@ def cmd_config(args: list[str]) -> None:
         LANG = rest[0]
     elif key == "token":
         API_TOKEN = rest[0]
+    elif key == "provider":
+        # "auto" o "-" vuelve a dejar decidir al servidor.
+        PROVIDER = "" if rest[0] in ("auto", "-") else rest[0]
+    elif key == "tts":
+        TTS = "" if rest[0] in ("auto", "-") else rest[0]
     else:
-        print("Clave desconocida. Usa: url, device, lang o token")
+        print("Clave desconocida. Usa: url, device, lang, token, provider o tts")
         return
     cmd_config([])
 
@@ -211,8 +244,15 @@ Comandos:
   forget <id>                  Borra un recuerdo (vale el prefijo)
   voices [prefijo]             Lista voces disponibles (p. ej. "voices ca")
   health                       Comprueba que el servidor responde
-  config [url|device|lang|token] <v>  Ver o cambiar configuración
+  config [url|device|lang|token|provider|tts] <v>   Ver o cambiar configuración
   help / exit
+
+Para comparar proveedores sin reiniciar el servidor:
+  config provider groq         visión con Groq (rápido, cuota justa)
+  config provider gemini       visión con Gemini (cuota holgada)
+  config tts piper             voz en local (rápida)
+  config tts edge              voz de Microsoft (mejor timbre, más lenta)
+  config provider auto         volver a lo que tenga el servidor
 """
 
 COMMANDS = {

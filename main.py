@@ -1,8 +1,15 @@
-"""Backend de Bonsai: un único endpoint que orquesta visión + voz + memoria.
+"""Backend de Bonsai: orquesta visión + voz + memoria en una sola petición.
 
-La ESP32 (o la app web) solo tiene que hacer POST /describe con la imagen;
-aquí se añade contexto (fecha + recuerdos), se pide la descripción a Groq y se
-convierte a audio con edge-tts.
+Hay dos puertas de entrada, según quién llame:
+
+- `/describe` para navegadores: devuelve JSON con el audio en base64.
+- `/look` para la ESP32-S3: devuelve las muestras en crudo y en streaming,
+  listas para el I2S del MAX98357A.
+
+Las dos hacen lo mismo por dentro: reducen la foto, le añaden contexto (fecha y
+recuerdos del dispositivo), piden la descripción al proveedor de visión
+(`vision.py`, que elige entre Gemini y Groq) y la convierten a voz
+(`tts.py`, que elige entre Piper en local y edge-tts).
 """
 
 from __future__ import annotations
@@ -27,7 +34,7 @@ import vision
 from vision import VisionRateLimit, describe_error
 
 # Token para proteger el endpoint. Al estar expuesto a internet, sin esto
-# cualquiera que descubra la URL podría gastar tu cuota de Groq.
+# cualquiera que descubra la URL podría gastar tu cuota del proveedor de visión.
 # Si se deja vacío no se exige (cómodo en local, NO recomendable en la VPS).
 API_TOKEN = os.environ.get("BONSAI_API_TOKEN", "")
 
