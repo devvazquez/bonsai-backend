@@ -467,6 +467,66 @@ la idea es justamente no tener que descodificar nada.
 Para solo texto a voz sigue estando `/speak`, que también devuelve el audio en
 crudo.
 
+#### Cómo configurar la cámara (OV3660)
+
+La XIAO ESP32S3 Sense monta un **OV3660: 3 MP, 2048x1536 (QXGA), 1/5"**, en las
+revisiones nuevas (las viejas llevaban un OV2640 de 2 MP).
+
+Capturar a la resolución máxima es tirar el tiempo y la cuota. Lo que interesa
+es que la foto **ya salga de la cámara con el tamaño bueno**, porque si el lado
+largo no pasa de `IMAGE_MAX_SIDE` (896 por defecto) el servidor no la toca y se
+ahorra el remuestreo:
+
+| `frame_size` | Píxeles | KB | Tokens en Groq | ¿Reduce el servidor? |
+| --- | --- | --- | --- | --- |
+| `FRAMESIZE_VGA` | 640x480 | 58 | 1.353 | No |
+| **`FRAMESIZE_SVGA`** | **800x600** | **81** | **2.115** | **No** |
+| `FRAMESIZE_XGA` | 1024x768 | 114 | 3.464 | Sí (+~200 ms) |
+| `FRAMESIZE_UXGA` | 1600x1200 | 208 | 8.458 | Sí |
+| `FRAMESIZE_QXGA` | 2048x1536 | 290 | 13.858 | Sí |
+
+**SVGA es el punto bueno**: es 4:3 como el sensor (no recorta), no dispara el
+remuestreo en el servidor y sigue leyendo rótulos. Comprobado de extremo a
+extremo: `reducir 0 ms`, visión 883 ms. Con QXGA gastarías 6,5 veces más cuota
+para que el servidor lo tire todo a 896 px de todas formas.
+
+```c
+camera_config_t config = {
+    // ... los pines de la XIAO ...
+    .xclk_freq_hz = 20000000,
+    .pixel_format = PIXFORMAT_JPEG,     // que comprima el sensor, no la CPU
+    .frame_size   = FRAMESIZE_SVGA,     // 800x600
+    .jpeg_quality = 12,                 // ojo: 0-63 y MENOS es MEJOR
+    .fb_count     = 2,                  // el OV3660 necesita 2
+    .fb_location  = CAMERA_FB_IN_PSRAM,
+    .grab_mode    = CAMERA_GRAB_LATEST, // si no, te llevas el fotograma viejo
+};
+
+// Ajustes propios del OV3660, del ejemplo oficial CameraWebServer
+sensor_t *s = esp_camera_sensor_get();
+if (s->id.PID == OV3660_PID) {
+    s->set_vflip(s, 1);         // el OV3660 viene del revés
+    s->set_brightness(s, 1);
+    s->set_saturation(s, -2);   // satura de más
+}
+```
+
+Cuatro cosas que suelen dar guerra:
+
+- **`jpeg_quality` va al revés** que en todas partes: 0-63 y cuanto **menos**,
+  mejor calidad y más bytes. 10-12 va bien; con 30 el modelo empieza a fallar
+  al leer texto.
+- **Tira los 2 o 3 primeros fotogramas** tras encender la cámara: el
+  autoexposición y el balance de blancos tardan en asentarse y las primeras
+  fotos salen oscuras o verdosas. `esp_camera_fb_get()` + `esp_camera_fb_return()`
+  y a la basura.
+- **PSRAM**: la XIAO lleva OCTAL, no QUAD (`CONFIG_SPIRAM_MODE_OCT=y`). Con el
+  OV3660 hace falta además `CONFIG_CAMERA_PSRAM_DMA_MODE=n`, y bajar
+  `CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL` a 4096 para que quede memoria para el
+  WiFi.
+- **No captures en RGB565 para comprimir luego por software.** Con
+  `PIXFORMAT_JPEG` comprime el propio sensor y sale gratis.
+
 ---
 
 ## 6. Variables de entorno
