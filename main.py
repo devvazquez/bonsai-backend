@@ -196,6 +196,9 @@ async def _describir(req: DescribeRequest) -> tuple[str, dict[str, str]]:
         "X-Bonsai-Provider": provider,
         "X-Bonsai-Model": vision.model_for(provider),
         "X-Bonsai-Vision-Ms": str(timings.get("vision_ms", 0)),
+        # Reducir una foto de 12 MP son ~200-300 ms que si no aparecen aquí
+        # descuadran cualquier medición hecha desde fuera.
+        "X-Bonsai-Resize-Ms": str(timings.get("reducir_ms", 0)),
     }
 
 
@@ -358,7 +361,7 @@ async def look(req: DescribeRequest) -> StreamingResponse:
         # Sin esto el navegador no deja leer las X-Bonsai-* desde JavaScript.
         "Access-Control-Expose-Headers": "X-Bonsai-Text, X-Bonsai-Format, "
         "X-Bonsai-Rate, X-Bonsai-Bits, X-Bonsai-Channels, X-Bonsai-Voice, "
-        "X-Bonsai-Provider, X-Bonsai-Model, X-Bonsai-Vision-Ms",
+        "X-Bonsai-Provider, X-Bonsai-Model, X-Bonsai-Vision-Ms, X-Bonsai-Resize-Ms",
     })
 
     trozos = piper_tts.stream_raw(texto, voz, formato, rate)
