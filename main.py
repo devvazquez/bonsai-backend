@@ -507,3 +507,24 @@ async def voices(prefix: str = "", tts_provider: str | None = None) -> dict[str,
         "tts": proveedor,
         "voices": await tts.list_available_voices(prefix, proveedor),
     }
+
+
+# --------------------------------------------------------------------------
+# Panel de administración de la base de datos, en /admin
+# --------------------------------------------------------------------------
+# Es acceso SQL completo, así que solo se monta si hay ADMIN_PASSWORD. Sin
+# ella la ruta no existe, que es más seguro que existir y estar abierta.
+# Para el día a día no hace falta: /memoria ya deja editar los recuerdos.
+if os.environ.get("ADMIN_PASSWORD"):
+    import panel as _panel
+    from nicegui import ui as _ui
+
+    _panel.construeix("/admin")
+    _ui.run_with(
+        app,
+        mount_path="/admin",
+        # Firma la cookie de sesión del panel. Se deriva del propio password
+        # para no obligar a definir otra variable más.
+        storage_secret=os.environ["ADMIN_PASSWORD"],
+        title="Bonsai · base de dades",
+    )

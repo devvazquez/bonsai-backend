@@ -9,3 +9,7 @@ piper-tts==1.6.0
 # Para reducir la foto antes de mandarla a Groq, que cobra por píxeles.
 pillow==12.3.0
 pydantic==2.13.4
+# Panel de administración de la base de datos (/admin). Sirve Vue y Quasar
+# desde el propio paquete: no depende de ningún CDN. Solo se importa si
+# ADMIN_PASSWORD está definida.
+nicegui==3.15.0

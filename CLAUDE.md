@@ -183,7 +183,24 @@ Dos herramientas, cada una para lo suyo:
 
 - **`/memoria`**: página propia, para el día a día. Ver, añadir, editar y borrar recuerdos
   por dispositivo, sin tocar SQL. Es la que hay que usar normalmente.
-- **`sqlite-web`** (perfil `admin` de Docker Compose): crear tablas, columnas, índices,
-  SQL a mano, importar y exportar. Está hecho y probado, así que no escribas un panel SQL
-  a mano. Escucha solo en `127.0.0.1:8081` y se llega por túnel SSH: es acceso SQL
-  completo y **nunca** debe exponerse a internet.
+- **`/admin`** (`panel.py`): explorar cualquier tabla, crearlas, añadir columnas, editar
+  filas y ejecutar SQL a mano. Va con NiceGUI montado sobre el mismo FastAPI, así que no
+  hay contenedor ni puerto aparte.
+
+Antes de escribirlo se probaron sqlite-web, DbGate y Outerbase Studio. Outerbase se
+descartó porque carga la interfaz desde `studio.outerbase.com` (sin internet te quedas
+sin panel: no es autoalojado de verdad). DbGate llegó a estar en el compose, pero era
+otro contenedor, otro puerto y otro login para lo mismo.
+
+Dos cosas del panel que costaron encontrar:
+
+1. **`/admin` solo existe si hay `ADMIN_PASSWORD`.** Es acceso SQL completo; sin
+   contraseña la ruta no se monta y devuelve 404. La puerta va como middleware de
+   Starlette y no como dependencia de FastAPI, porque el WebSocket de NiceGUI no pasa
+   por las dependencias.
+2. **NiceGUI habla por WebSocket en `/socket.io`.** Detrás de Nginx hacen falta
+   `proxy_http_version 1.1` y las cabeceras `Upgrade`/`Connection`, o la página carga y
+   se queda en blanco. Caddy lo hace solo.
+
+Para probarlo no hace falta cuota de nadie: `ADMIN_PASSWORD=proves uvicorn main:app` y
+Playwright contra `/admin`.

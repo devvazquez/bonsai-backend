@@ -1,7 +1,8 @@
 {$BONSAI_DOMAIN} {
 	reverse_proxy bonsai:8080
 
-	# Comprime las respuestas (el JSON con el audio en base64 es grande).
+	# Comprime HTML y JSON. El audio de /look ya va en crudo y en streaming,
+	# así que a ese no le toca nada.
 	encode gzip
 
 	# La descripción + el audio pueden tardar unos segundos.
