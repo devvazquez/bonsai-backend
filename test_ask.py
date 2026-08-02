@@ -183,6 +183,20 @@ async def principal():
         r = await c.post("/ask", content=struct.pack(">I", 5000) + FOTO)
         check("cuerpo cortado -> 400", r.status_code == 400, r.text[:120])
 
+        # Un m4a de iPhone: "ftyp" va en el byte 4, no al principio. Con un
+        # startswith acababa envuelto en una cabecera WAV que no le tocaba.
+        enviadas.clear()
+        usa(responde)
+        M4A = (struct.pack(">I", 28) + b"ftypM4A " + b"\x00" * 2000)
+        r = await c.post("/ask", content=trama(FOTO, M4A))
+        check("un m4a llega 200", r.status_code == 200, r.text[:120])
+        cuerpo = enviadas[0].content
+        check("el m4a se manda tal cual, sin envolver",
+              b"RIFF" not in cuerpo[:400] and b'filename="veu.m4a"' in cuerpo)
+        check("de un m4a no se inventa la duración",
+              "x-bonsai-audio-secs" not in r.headers
+              and r.headers["x-bonsai-audio-bytes"] == str(len(M4A)))
+
         r = await c.post("/ask?audioFormat=flac", content=trama(FOTO, PCM))
         check("formato inventado -> 400 antes de leer nada",
               r.status_code == 400, r.text[:120])
@@ -203,7 +217,7 @@ async def principal():
         r = await c.post("/ask", content=trama(FOTO, PCM))
         check("no se entiende nada -> 422", r.status_code == 422, r.text[:140])
         check("aun así se guarda la foto",
-              len(memory.list_captures()) == 3, str(len(memory.list_captures())))
+              len(memory.list_captures()) == 4, str(len(memory.list_captures())))
 
         # 429 de la cuota de whisper
         def sin_cuota(request):

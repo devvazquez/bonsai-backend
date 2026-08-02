@@ -129,7 +129,12 @@ Mismo camino que `/look` pero con voz por delante. El cuerpo va en crudo,
 foto se guarda en cuanto está entera, mientras la persona todavía habla. Por
 eso el audio va "streameado" — la subida se solapa con la frase.
 
-Tres cosas que conviene no volver a averiguar:
+Medido de verdad (foto de una mochila + 5 s de pregunta en m4a): Whisper 295 ms,
+visión 1.158-1.278 ms, **primer byte de audio a 1.897 ms** con la foto ya a
+896 px, y 2.685 ms si llega de 12 MP (reducirla cuesta 703 ms, más que
+transcribir). O sea que `/ask` suma ~870 ms sobre los ~1.030 ms de `/look`.
+
+Cuatro cosas que conviene no volver a averiguar:
 
 1. **Whisper NO gasta la cuota de texto de Groq.** Se factura por segundos de
    audio, así que probar `/ask` no te deja sin `/look`. Aun así el tope de
@@ -141,6 +146,12 @@ Tres cosas que conviene no volver a averiguar:
    verdad.** No sirve `piper_tts.cabecera_wav`, que pone 0xFFFFFFFF porque
    responde sobre la marcha: Whisper rechaza un WAV con longitudes imposibles.
    Por eso hay una `stt.cabecera_wav` aparte.
+4. **El m4a no empieza por su firma**: los 4 primeros bytes son el tamaño de la
+   caja y `ftyp` viene detrás, así que un `startswith` no lo detecta y el
+   fichero acababa envuelto en una cabecera WAV que no le tocaba. Es lo que
+   graba un iPhone, o sea que salta a la primera prueba con audio de verdad.
+   El MP3 sin ID3 (sync 0xFF Ex) NO se detecta a propósito: esos dos bytes
+   salen a menudo en PCM en crudo y confundirlos sería peor.
 
 Antes de la foto y la pregunta se le dan por dichos dos turnos —
 `user: Hey Bonsai!` / `assistant: Diga’m!` (`vision.PREAMBULO_VEU`)— para que

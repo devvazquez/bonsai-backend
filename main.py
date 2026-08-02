@@ -579,12 +579,19 @@ async def ask(
     # después, queda constancia de qué estaba mirando.
     capture_id, _ruta = await asyncio.to_thread(memory.save_capture, deviceId, foto)
 
-    segundos = stt.duracion_pcm16(len(audio), micRate)
-    if segundos < ASK_MIN_SEGUNDOS:
+    # Los segundos solo se saben si es PCM en crudo; con un m4a o un ogg
+    # habría que descodificarlo, así que ahí `segundos` viene a None y lo
+    # único que se puede mirar es que no venga vacío.
+    _, _, segundos = stt.envolver(audio, micRate)
+    if segundos is not None and segundos < ASK_MIN_SEGUNDOS:
         raise HTTPException(
             400,
             f"Apenas hay audio ({segundos:.2f} s). ¿Se ha soltado el botón "
             "antes de hablar o el micro no está dando muestras?",
+        )
+    if len(audio) < 256:
+        raise HTTPException(
+            400, f"Apenas hay audio ({len(audio)} bytes). ¿Ha llegado algo del micro?"
         )
 
     t0 = time.perf_counter()
@@ -607,14 +614,16 @@ async def ask(
         # Se guarda igualmente: una transcripción vacía repetida es el síntoma
         # de un micro mal configurado, y así se ve en /admin.
         await asyncio.to_thread(
-            memory.finish_capture, capture_id, audio_secs=round(segundos, 2),
+            memory.finish_capture, capture_id,
+            audio_secs=round(segundos, 2) if segundos is not None else None,
             stt_ms=stt_ms, transcript="",
         )
+        cuanto = f"{segundos:.1f} s de" if segundos is not None else f"{len(audio)} bytes de"
         raise HTTPException(
             422,
-            f"No se ha entendido nada en {segundos:.1f} s de audio. Si pasa "
-            "siempre, mira la ganancia del micro; si es puntual, vuelve a "
-            "preguntar o tira de /look, que no necesita voz.",
+            f"No se ha entendido nada en {cuanto} audio. Si pasa siempre, mira "
+            "la ganancia del micro; si es puntual, vuelve a preguntar o tira "
+            "de /look, que no necesita voz.",
         )
 
     peticion = LookRequest(
@@ -633,7 +642,8 @@ async def ask(
     total_ms = int((time.perf_counter() - t_total) * 1000)
     await asyncio.to_thread(
         memory.finish_capture, capture_id,
-        audio_secs=round(segundos, 2), transcript=transcripcion, reply=texto,
+        audio_secs=round(segundos, 2) if segundos is not None else None,
+        transcript=transcripcion, reply=texto,
         stt_ms=stt_ms, vision_ms=int(cabeceras.get("X-Bonsai-Vision-Ms", 0)),
         total_ms=total_ms,
     )
@@ -644,9 +654,11 @@ async def ask(
             transcripcion.encode()).decode("ascii"),
         "X-Bonsai-Stt-Ms": str(stt_ms),
         "X-Bonsai-Stt-Model": stt.MODEL,
-        "X-Bonsai-Audio-Secs": f"{segundos:.2f}",
+        "X-Bonsai-Audio-Bytes": str(len(audio)),
         "X-Bonsai-Capture-Id": capture_id,
     })
+    if segundos is not None:
+        cabeceras["X-Bonsai-Audio-Secs"] = f"{segundos:.2f}"
     return await _responde_con_voz(texto, plan, cabeceras)
 
 

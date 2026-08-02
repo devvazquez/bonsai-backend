@@ -43,6 +43,16 @@ _FIRMAS = (
     (b"ID3", "mp3"),
 )
 
+# El m4a (y el mp4 en general) no empieza por su firma: los primeros 4 bytes
+# son el tamaño de la caja y "ftyp" viene detrás. Es lo que graba un iPhone,
+# así que sin esto un m4a acababa envuelto en una cabecera WAV que no le
+# correspondía y Whisper recibía basura.
+_FTYP = slice(4, 8)
+
+# Un MP3 sin etiqueta ID3 empieza por el sync del primer frame (0xFF Ex). No
+# se detecta a propósito: en PCM en crudo esos dos bytes salen a menudo, y
+# confundir muestras con un MP3 es peor que pedir que traigan cabecera.
+
 
 def api_key() -> str:
     return os.environ.get("GROQ_API_KEY", "")
@@ -65,16 +75,24 @@ def cabecera_wav(sample_rate: int, muestras_bytes: int, bits: int = 16) -> bytes
     )
 
 
-def envolver(audio: bytes, sample_rate: int) -> tuple[bytes, str]:
-    """Deja el audio listo para Groq y dice con qué extensión mandarlo.
+def envolver(audio: bytes, sample_rate: int) -> tuple[bytes, str, float | None]:
+    """Deja el audio listo para Groq: (cuerpo, extensión, segundos).
 
-    Si ya viene en un formato con cabecera (WAV, OGG, MP3...) se respeta; si es
-    PCM en crudo, que es lo que da el I2S del ESP32, se le pone la cabecera WAV.
+    Si ya viene en un formato con cabecera (WAV, OGG, m4a...) se respeta tal
+    cual; si es PCM en crudo, que es lo que da el I2S del ESP32, se le pone la
+    cabecera WAV.
+
+    Los segundos solo se saben con el PCM, donde son una división: en un
+    formato comprimido harían falta el bitrate y descodificarlo, y no vale la
+    pena solo para enseñar una cifra. De ahí el None.
     """
     for firma, ext in _FIRMAS:
         if audio.startswith(firma):
-            return audio, ext
-    return cabecera_wav(sample_rate, len(audio)) + audio, "wav"
+            return audio, ext, None
+    if audio[_FTYP] == b"ftyp":
+        return audio, "m4a", None
+    return (cabecera_wav(sample_rate, len(audio)) + audio, "wav",
+            duracion_pcm16(len(audio), sample_rate))
 
 
 def duracion_pcm16(n_bytes: int, sample_rate: int) -> float:
@@ -108,7 +126,7 @@ async def transcribe(
         raise RuntimeError("GROQ_API_KEY no está configurada: /ask la necesita "
                            "para transcribir, aunque la visión use Gemini.")
 
-    cuerpo, ext = envolver(audio, sample_rate)
+    cuerpo, ext, _ = envolver(audio, sample_rate)
 
     datos = {"model": MODEL, "response_format": "json", "temperature": "0"}
     # Decírselo ahorra que Whisper adivine el idioma, que es de lo poco que

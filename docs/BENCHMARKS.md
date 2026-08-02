@@ -48,6 +48,35 @@ El preu del Groq és la quota: 8.000 tokens/minut són unes **3 fotos per minut*
 896 px. Per desenvolupar sense barallar-se amb el 429, Gemini; per a la
 latència, Groq.
 
+### `/ask`: què costa afegir-hi la veu
+
+Mesurat de veritat, amb una foto d'una motxilla i la pregunta *«Em podríeu dir
+de quina marca és la motxilla?»* dita en veu alta (5 s, m4a d'un iPhone). Dues
+crides, no un escombrat: cada foto són ~2.650 tokens dels 200.000 del dia.
+
+| | Foto de 12 MP (1.984 KB) | Foto ja a 896 px (102 KB) |
+| --- | --- | --- |
+| Transcripció (Whisper turbo) | 295 ms | 296 ms |
+| Reduir la foto al servidor | 703 ms | 0 ms (ja hi arriba petita) |
+| Visió (Qwen) | 1.158 ms | 1.278 ms |
+| **Primer byte d'àudio** | **2.685 ms** | **1.897 ms** |
+
+Tres coses que en surten:
+
+1. **Whisper costa uns 300 ms i prou**, i amb 5 s d'àudio. És la part barata:
+   la cara segueix sent la visió.
+2. **`/ask` afegeix ~870 ms sobre els ~1.030 ms de `/look`.** Uns 300 són la
+   transcripció; la resta és que la pregunta fa la resposta més llarga de
+   pensar que una descripció genèrica.
+3. **Reduir la foto al client val 790 ms**, més que la mateixa transcripció.
+   Amb una foto de 12 MP el servidor triga 703 ms només a encongir-la. L'ESP32
+   ja fa fotos petites, però qualsevol client que enviï una foto de mòbil
+   sencera hauria de reduir-la abans.
+
+Compte en llegir aquests números: la pujada va per `localhost`, o sigui zero.
+Per WiFi, els 1.984 KB de la foto sencera hi sumarien segons; els 102 KB de la
+reduïda, dècimes.
+
 ### La trampa en mesurar edge-tts: Microsoft cacheja per text i veu
 
 **Qualsevol mesura que repeteixi la mateixa frase és falsa**, i és fàcil caure-hi
