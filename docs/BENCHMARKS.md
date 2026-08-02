@@ -77,6 +77,36 @@ Compte en llegir aquests números: la pujada va per `localhost`, o sigui zero.
 Per WiFi, els 1.984 KB de la foto sencera hi sumarien segons; els 102 KB de la
 reduïda, dècimes.
 
+### La pujada en trossos: què se solapa i què no
+
+Comprovat amb sockets a pelo (sense cap llibreria de client pel mig, que és el
+que farà el firmware), enviant `Transfer-Encoding: chunked` sense
+`Content-Length`: la foto primer i després 3 s de mostres a 100 ms per tros.
+
+| | Quan |
+| --- | --- |
+| Foto desada al servidor | **0,01 s** |
+| La persona deixa de parlar | 3,01 s |
+| Capçaleres de tornada | 3,17 s |
+
+O sigui que la foto queda desada **tres segons abans** que s'acabi de parlar.
+Això només passa perquè `/ask` llegeix el cos en dos temps (`_Trama.foto()` i
+`_Trama.audio()`); si es llegís de cop —o amb `await request.body()`— la foto
+no es desaria fins al final i enviar en trossos no serviria de res. De fet la
+primera versió ho feia malament i el mesurament ho va destapar: la foto es
+desava a 3,01 s, clavada al final de la frase.
+
+**El que se solapa és la pujada, no la transcripció.** Whisper necessita
+l'àudio sencer, així que no comença fins que es tanca la petició. El guany és
+que quan la persona calla, el servidor ja té la foto i totes les mostres menys
+l'últim tros: pot anar a transcriure de seguida en comptes de posar-se a pujar
+2 MB.
+
+Per si serveix de referència, una app mínima de Starlette entrega el primer
+tros **0,6 ms** després d'enviar-lo, i una de FastAPI amb `Request` i
+paràmetres de query, **3 ms**. Cap dels dos espera el cos sencer: si algun cop
+sembla que sí, és el codi de l'endpoint, no el servidor.
+
 ### La trampa en mesurar edge-tts: Microsoft cacheja per text i veu
 
 **Qualsevol mesura que repeteixi la mateixa frase és falsa**, i és fàcil caure-hi
@@ -351,6 +381,19 @@ Quatre coses que solen donar guerra:
 I una cosa del firmware que val més que qualsevol optimització del servidor:
 **mantén la connexió TLS oberta** entre fotos. El handshake és el més car de tot
 el costat del dispositiu.
+
+## El micròfon de la XIAO ESP32-S3 Sense
+
+No és un INMP441 d'I2S clàssic: la placa porta un **PDM** (MSM261D3526H1CPM)
+que es llegeix amb el perifèric I2S en mode PDM RX. El filtre del propi I2S ja
+et torna PCM16, o sigui que el que s'envia a `/ask` són les mostres tal qual,
+sense codificar res.
+
+- 16 kHz mono és de sobres per a veu, i és el que Whisper vol de tota manera.
+- A 16 kHz, PCM16 mono són **32 KB/s**: 3 s de pregunta són 96 KB.
+- Envia-ho amb `Transfer-Encoding: chunked` mentre graves, no ho acumulis tot
+  a la PSRAM per enviar-ho al final: el servidor ja està preparat per llegir-ho
+  a trossos i així la foto es desa mentre encara parles.
 
 ## Altres apunts
 

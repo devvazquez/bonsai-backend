@@ -10,9 +10,11 @@ peticiones, no por los 200.000 tokens/día que se comen las fotos. Es decir,
 probar `/ask` no te deja sin `/look`.
 
 La API es la de OpenAI (`/openai/v1/audio/transcriptions`), así que espera un
-fichero de audio de verdad, no muestras sueltas. El micro del ESP32 (un INMP441
-por I2S) da PCM en crudo, así que aquí se le pone una cabecera WAV antes de
-mandarlo: son 44 bytes y evita tener que codificar nada en el microcontrolador.
+fichero de audio de verdad, no muestras sueltas. El micro de la XIAO ESP32-S3
+Sense es un PDM (MSM261D3526H1CPM) que se lee con el periférico I2S en modo
+PDM, y lo que sale de ahí es PCM16 en crudo. Por eso aquí se le pone una
+cabecera WAV antes de mandarlo: son 44 bytes y evita tener que codificar nada
+en el microcontrolador.
 """
 
 from __future__ import annotations

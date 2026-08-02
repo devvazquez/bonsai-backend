@@ -158,6 +158,31 @@ async def principal():
         check("guarda de qué dispositivo es", fila["device_id"] == "ulleres-01")
 
         # ---------------------------------------------------------------
+        # 3 bis. La foto se guarda MIENTRAS todavía sube el audio
+        # ---------------------------------------------------------------
+        # Esto estuvo mal una vez: se leía el cuerpo entero y solo entonces se
+        # guardaba, así que subir en trozos no servía de nada. Aquí el cuerpo
+        # es un generador que mira el disco antes de soltar el audio.
+        antes = len(memory.list_captures())
+        visto = {}
+
+        async def cuerpo_a_trozos():
+            yield struct.pack(">I", len(FOTO)) + FOTO
+            # Ceder el control para que el servidor procese lo ya enviado.
+            for _ in range(20):
+                await asyncio.sleep(0.01)
+                if len(memory.list_captures()) > antes:
+                    break
+            visto["guardada_abans"] = len(memory.list_captures()) > antes
+            yield PCM
+
+        r = await c.post("/ask?deviceId=solapada", content=cuerpo_a_trozos())
+        check("con el cuerpo en trozos responde 200", r.status_code == 200,
+              r.text[:150])
+        check("la foto ya estaba guardada antes de mandar el audio",
+              visto.get("guardada_abans") is True)
+
+        # ---------------------------------------------------------------
         # 4. /look sigue sin preámbulo (no se ha cambiado su comportamiento)
         # ---------------------------------------------------------------
         enviadas.clear()
@@ -216,8 +241,10 @@ async def principal():
         usa(mudo)
         r = await c.post("/ask", content=trama(FOTO, PCM))
         check("no se entiende nada -> 422", r.status_code == 422, r.text[:140])
+        # 6 = la buena, la solapada, el m4a, la de 3 ms, la de 31 s y esta.
+        # Las que fallan antes de tener la foto entera no dejan fila.
         check("aun así se guarda la foto",
-              len(memory.list_captures()) == 4, str(len(memory.list_captures())))
+              len(memory.list_captures()) == 6, str(len(memory.list_captures())))
 
         # 429 de la cuota de whisper
         def sin_cuota(request):

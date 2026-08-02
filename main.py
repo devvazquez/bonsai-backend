@@ -468,10 +468,8 @@ ASK_MAX_SEGUNDOS = float(os.environ.get("ASK_MAX_AUDIO_SECONDS", "30"))
 ASK_MIN_SEGUNDOS = 0.25
 
 
-async def _lee_trama(
-    request: Request, max_audio_bytes: int
-) -> tuple[bytes, bytes]:
-    """Lee el cuerpo de /ask: primero la foto, luego el audio hasta que acabe.
+class _Trama:
+    """Lee el cuerpo de /ask a medida que llega, en dos tiempos.
 
     El cuerpo va en crudo y con esta forma:
 
@@ -479,49 +477,55 @@ async def _lee_trama(
         N bytes  la foto (JPEG)
         resto    el audio del micro, hasta que se cierra la petición
 
-    Se lee del stream según llega, no con `await request.body()`, para poder
-    guardar la foto en cuanto está completa mientras la persona todavía está
-    hablando. Es la razón de que el audio vaya "streameado": la subida se
-    solapa con la frase en vez de ir después.
+    Van en dos métodos y no en uno a propósito. La gracia de que el audio suba
+    en trozos es que la foto ya está aquí mucho antes de que la persona acabe
+    de hablar: si se leyera el cuerpo entero de una vez (o con `request.body()`)
+    la foto no se guardaría hasta el final y subir en streaming no serviría de
+    nada. Con esto, `foto()` vuelve en cuanto la imagen está completa, se
+    guarda, y solo entonces se espera al resto.
     """
-    trozos = request.stream().__aiter__()
-    buf = bytearray()
 
-    async def toma(n: int) -> bytes:
-        while len(buf) < n:
+    def __init__(self, request: Request) -> None:
+        self._trozos = request.stream().__aiter__()
+        self._buf = bytearray()
+
+    async def _toma(self, n: int) -> bytes:
+        while len(self._buf) < n:
             try:
-                buf.extend(await trozos.__anext__())
+                self._buf.extend(await self._trozos.__anext__())
             except StopAsyncIteration:
                 raise HTTPException(
                     400,
                     f"El cuerpo se acabó antes de tiempo: esperaba {n} bytes y "
-                    f"llegaron {len(buf)}. El formato es "
+                    f"llegaron {len(self._buf)}. El formato es "
                     "[4 bytes de longitud][foto][audio].",
                 ) from None
-        salida = bytes(buf[:n])
-        del buf[:n]
+        salida = bytes(self._buf[:n])
+        del self._buf[:n]
         return salida
 
-    n_imagen = int.from_bytes(await toma(4), "big")
-    if not 0 < n_imagen <= ASK_MAX_IMAGEN:
-        raise HTTPException(
-            400,
-            f"Longitud de imagen imposible: {n_imagen} bytes (el máximo son "
-            f"{ASK_MAX_IMAGEN}). ¿Los 4 primeros bytes van en big-endian?",
-        )
-    foto = await toma(n_imagen)
-
-    audio = bytearray(buf)
-    buf.clear()
-    async for trozo in trozos:
-        audio.extend(trozo)
-        if len(audio) > max_audio_bytes:
+    async def foto(self) -> bytes:
+        n = int.from_bytes(await self._toma(4), "big")
+        if not 0 < n <= ASK_MAX_IMAGEN:
             raise HTTPException(
-                413,
-                f"Audio demasiado largo: el tope son {ASK_MAX_SEGUNDOS:g} s "
-                "(ASK_MAX_AUDIO_SECONDS).",
+                400,
+                f"Longitud de imagen imposible: {n} bytes (el máximo son "
+                f"{ASK_MAX_IMAGEN}). ¿Los 4 primeros bytes van en big-endian?",
             )
-    return foto, bytes(audio)
+        return await self._toma(n)
+
+    async def audio(self, max_bytes: int) -> bytes:
+        datos = bytearray(self._buf)
+        self._buf.clear()
+        async for trozo in self._trozos:
+            datos.extend(trozo)
+            if len(datos) > max_bytes:
+                raise HTTPException(
+                    413,
+                    f"Audio demasiado largo: el tope son {ASK_MAX_SEGUNDOS:g} s "
+                    "(ASK_MAX_AUDIO_SECONDS).",
+                )
+        return bytes(datos)
 
 
 @app.post("/ask", dependencies=[Depends(require_token)])
@@ -543,13 +547,16 @@ async def ask(
     Aquí se transcribe con Whisper turbo en Groq y el texto pasa a ser la
     pregunta que se le hace al modelo de visión.
 
-    El cuerpo va en crudo, sin JSON ni base64 (ver `_lee_trama`):
+    El cuerpo va en crudo, sin JSON ni base64 (ver `_Trama`):
 
         [4 bytes de longitud][foto JPEG][audio del micro]
 
-    El audio puede ser PCM16 mono en crudo, que es lo que da el I2S del INMP441
-    (di a qué frecuencia con `micRate`), o un fichero con cabecera (WAV, OGG,
-    MP3): se detecta solo.
+    El audio puede ser PCM16 mono en crudo, que es lo que sale del micro PDM de
+    la XIAO ESP32-S3 Sense leído por I2S (di a qué frecuencia con `micRate`), o
+    un fichero con cabecera (WAV, OGG, m4a, MP3): se detecta solo.
+
+    Sube en trozos (`Transfer-Encoding: chunked`), que es lo que permite que la
+    foto ya esté guardada mientras la persona todavía habla.
 
     La respuesta es exactamente la de `/look`: el audio en crudo y en
     streaming, con el texto en `X-Bonsai-Text`. Además vuelve lo que se entendió
@@ -572,12 +579,17 @@ async def ask(
         )
 
     t_total = time.perf_counter()
-    tope = int(ASK_MAX_SEGUNDOS * micRate * 2)
-    foto, audio = await _lee_trama(request, tope)
+    trama = _Trama(request)
 
-    # La foto se guarda ya, antes de transcribir ni describir: si algo falla
-    # después, queda constancia de qué estaba mirando.
+    # La foto se guarda en cuanto está entera, mientras la persona todavía
+    # está hablando: aquí es donde se aprovecha que el audio suba en trozos.
+    # Además, si algo falla después, queda constancia de qué estaba mirando.
+    foto = await trama.foto()
     capture_id, _ruta = await asyncio.to_thread(memory.save_capture, deviceId, foto)
+    t_foto = time.perf_counter()
+
+    audio = await trama.audio(int(ASK_MAX_SEGUNDOS * micRate * 2))
+    subida_ms = int((time.perf_counter() - t_foto) * 1000)
 
     # Los segundos solo se saben si es PCM en crudo; con un m4a o un ogg
     # habría que descodificarlo, así que ahí `segundos` viene a None y lo
@@ -655,6 +667,9 @@ async def ask(
         "X-Bonsai-Stt-Ms": str(stt_ms),
         "X-Bonsai-Stt-Model": stt.MODEL,
         "X-Bonsai-Audio-Bytes": str(len(audio)),
+        # Cuánto se ha estado esperando al micro después de tener ya la foto.
+        # Es tiempo que la persona pasa hablando, no latencia del servidor.
+        "X-Bonsai-Upload-Ms": str(subida_ms),
         "X-Bonsai-Capture-Id": capture_id,
     })
     if segundos is not None:

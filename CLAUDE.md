@@ -125,9 +125,17 @@ hecho. El WAV pesa 247 KB frente a 66 KB de la misma frase en MP3, que importa p
 ## `/ask`: la foto y la pregunta dicha en voz alta
 
 Mismo camino que `/look` pero con voz por delante. El cuerpo va en crudo,
-`[4 bytes de longitud][foto JPEG][audio]`, y se lee del stream según llega: la
-foto se guarda en cuanto está entera, mientras la persona todavía habla. Por
-eso el audio va "streameado" — la subida se solapa con la frase.
+`[4 bytes de longitud][foto JPEG][audio]`, y admite `Transfer-Encoding: chunked`
+sin `Content-Length`, que es como lo mandará el firmware.
+
+**El cuerpo se lee en dos tiempos a propósito** (`_Trama.foto()` y
+`_Trama.audio()`). Si se lee de una vez —o con `await request.body()`— la foto
+no se guarda hasta el final y mandar en trozos no sirve de nada. La primera
+versión lo hacía mal y solo se vio al medirlo con sockets a pelo: la foto se
+guardaba a los 3,01 s, clavada al final de la frase. Ahora, 0,01 s.
+
+Y ojo con lo que se solapa: **la subida, no la transcripción**. Whisper
+necesita el audio entero, así que no empieza hasta que se cierra la petición.
 
 Medido de verdad (foto de una mochila + 5 s de pregunta en m4a): Whisper 295 ms,
 visión 1.158-1.278 ms, **primer byte de audio a 1.897 ms** con la foto ya a

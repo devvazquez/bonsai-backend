@@ -188,9 +188,20 @@ Es llegeix a mesura que arriba: la foto es guarda en quant està sencera,
 mentre la persona encara està parlant. Per això l'àudio va en streaming — la
 pujada se solapa amb la frase en comptes d'anar-hi al darrere.
 
-L'àudio pot ser **PCM16 mono en cru** (el que dona l'I2S de l'INMP441; digues
-a quina freqüència amb `micRate`) o un fitxer amb capçalera (WAV, OGG, MP3):
-es detecta sol.
+L'àudio pot ser **PCM16 mono en cru** —el que surt del micròfon PDM de la XIAO
+ESP32-S3 Sense llegit per I2S; digues a quina freqüència amb `micRate`— o un
+fitxer amb capçalera (WAV, OGG, m4a, MP3): es detecta sol.
+
+El cos es pot enviar **en trossos, amb `Transfer-Encoding: chunked` i sense
+`Content-Length`**, que és el que farà el firmware: obre la connexió, escup la
+foto i va enviant les mostres del micròfon a mesura que les llegeix. Comprovat
+amb sockets a pelo: la foto queda desada al servidor **als 10 ms**, tres segons
+abans que la persona acabi de parlar.
+
+Compte amb què vol dir això: el que se solapa és **la pujada**, no la
+transcripció. Whisper necessita l'àudio sencer, així que no comença fins que es
+tanca la petició. El que t'estalvies és el temps de pujar la foto i les mostres,
+que amb WiFi no és poc.
 
 Els paràmetres van a la query: `deviceId`, `lang`, `provider`, `tts`,
 `audioFormat`, `sampleRate`, `micRate` (per defecte 16000) i `maxSide`.
@@ -327,6 +338,7 @@ a [`.env.example`](.env.example), amb el perquè de cada valor per defecte.
 | `panel.py` | El panell `/admin` per administrar la base de dades |
 | `test_bonsai.py` | Terminal de proves, sense dependències |
 | `test_ask.py` | Prova de `/ask` de punta a punta, sense gastar quota |
+| `test_chunked.py` | Comprova que la pujada en trossos se solapa de veritat |
 | `bench_latency.py` | Banc de proves de latència, amb topall de quota |
 | `docs/BENCHMARKS.md` | Totes les mesures i el perquè de cada decisió |
 
