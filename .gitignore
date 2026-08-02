@@ -14,8 +14,10 @@ images.jpg
 # Modelos de Piper: 63 MB cada uno, se bajan solos al arrancar
 voices/
 *.wav
-# ...menos los clips que las gafas llevan grabados, que sí van al repositorio
-!assets/*.wav
+
+# Clips generados con generar_clips.py. No van al repositorio: el dispositivo
+# se los baja del backend con /speak, y así siempre son la voz que hay puesta.
+assets/
 
 # Sesiones del panel /admin (NiceGUI las guarda en el directorio de trabajo)
 .nicegui/

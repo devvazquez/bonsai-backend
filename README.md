@@ -234,20 +234,20 @@ pujar la foto i les mostres, que amb WiFi no és poc.
 
 #### El clip del «Diga’m»
 
-Va al repositori, a **[`assets/digam-16k.pcm`](assets/)**: 16 KB, 0,52 s,
-`pcm16` mono a 16 kHz, que és el que vol l'I2S del MAX98357A sense tocar res.
-Es copia a la SD al primer arrencada i es reprodueix des d'allà.
+No va al repositori: **el dispositiu se'l baixa del backend al primer
+arrencada** i el desa a la SD. Així sempre és la veu que hi ha posada al
+servidor, i no hi ha dues còpies que se'n vagin per camins diferents.
 
-El genera el propi backend, amb la mateixa veu que les respostes, perquè no es
-noti el salt entre el clip gravat i el que contesta el model:
-
-```bash
-python generar_clips.py       # el deixa a assets/
-
-# o baixar-lo directament al dispositiu, sense cap endpoint nou:
-curl -X POST "$API/speak?text=Diga%E2%80%99m!&audioFormat=pcm16&sampleRate=16000" \
-     -o digam-16k.pcm
 ```
+POST /speak?text=Diga%E2%80%99m!&audioFormat=pcm16&sampleRate=16000
+```
+
+Torna 16 KB de `pcm16` mono a 16 kHz (0,52 s): el que vol l'I2S del MAX98357A
+sense descodificar res. Es desa a la SD i es reprodueix des d'allà mentre la
+foto puja.
+
+Per tenir-lo a mà des de l'ordinador, `python generar_clips.py` el deixa a
+`assets/` (que està al `.gitignore`).
 
 I que el text coincideixi amb el que se li diu al model: els dos torns del
 preàmbul es configuren amb `ASK_WAKE_PHRASE` i `ASK_WAKE_REPLY`. Si canvies el
@@ -389,8 +389,7 @@ a [`.env.example`](.env.example), amb el perquè de cada valor per defecte.
 | `tts.py`, `piper_tts.py` | Motors de veu (Piper en local, edge-tts) |
 | `memory.py` | Records per dispositiu en SQLite |
 | `static/probar.html` | La pàgina `/provar` |
-| `assets/` | Els clips que les ulleres porten gravats (el «Diga’m») |
-| `generar_clips.py` | Els regenera amb la mateixa veu que les respostes |
+| `generar_clips.py` | Genera els clips de les ulleres (el «Diga’m») a `assets/` |
 | `panel.py` | El panell `/admin` per administrar la base de dades |
 | `test_bonsai.py` | Terminal de proves, sense dependències |
 | `test_ask.py` | Prova de `/ask` de punta a punta, sense gastar quota |
