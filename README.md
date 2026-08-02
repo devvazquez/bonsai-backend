@@ -234,11 +234,19 @@ pujar la foto i les mostres, que amb WiFi no és poc.
 
 #### El clip del «Diga’m»
 
-Que surti de la mateixa veu que les respostes: el genera el propi backend.
+Va al repositori, a **[`assets/digam-16k.pcm`](assets/)**: 16 KB, 0,52 s,
+`pcm16` mono a 16 kHz, que és el que vol l'I2S del MAX98357A sense tocar res.
+Es copia a la SD al primer arrencada i es reprodueix des d'allà.
+
+El genera el propi backend, amb la mateixa veu que les respostes, perquè no es
+noti el salt entre el clip gravat i el que contesta el model:
 
 ```bash
+python generar_clips.py       # el deixa a assets/
+
+# o baixar-lo directament al dispositiu, sense cap endpoint nou:
 curl -X POST "$API/speak?text=Diga%E2%80%99m!&audioFormat=pcm16&sampleRate=16000" \
-     -o digam.pcm      # 17,8 KB, 0,56 s, llest per escriure a l'I2S
+     -o digam-16k.pcm
 ```
 
 I que el text coincideixi amb el que se li diu al model: els dos torns del
@@ -381,6 +389,8 @@ a [`.env.example`](.env.example), amb el perquè de cada valor per defecte.
 | `tts.py`, `piper_tts.py` | Motors de veu (Piper en local, edge-tts) |
 | `memory.py` | Records per dispositiu en SQLite |
 | `static/probar.html` | La pàgina `/provar` |
+| `assets/` | Els clips que les ulleres porten gravats (el «Diga’m») |
+| `generar_clips.py` | Els regenera amb la mateixa veu que les respostes |
 | `panel.py` | El panell `/admin` per administrar la base de dades |
 | `test_bonsai.py` | Terminal de proves, sense dependències |
 | `test_ask.py` | Prova de `/ask` de punta a punta, sense gastar quota |

@@ -169,9 +169,16 @@ conteste como quien sigue una conversación. `/look` no los lleva.
 Bonsai", hace la foto y, mientras sube, suena por el altavoz un clip grabado
 que dice "Diga'm". Por eso van en `ASK_WAKE_PHRASE`/`ASK_WAKE_REPLY`: si se
 cambia el clip de las gafas hay que cambiarlas o le estaremos contando al
-modelo una conversación que no ha ocurrido. El clip se genera con el propio
-backend (`/speak?text=...&audioFormat=pcm16&sampleRate=16000`) para que sea la
-misma voz que las respuestas.
+modelo una conversación que no ha ocurrido.
+
+El clip vive en `assets/digam-16k.pcm` (16 KB, 0,52 s, pcm16 a 16 kHz) y se
+copia a la SD de las gafas al primer arranque. Lo genera `generar_clips.py`
+con el propio Piper, para que sea la misma voz que las respuestas y no se note
+el salto; también se puede bajar con
+`/speak?text=...&audioFormat=pcm16&sampleRate=16000`, que es lo que conviene si
+algún día cambia la voz del servidor. Ojo con dos cosas: `*.wav` está en el
+.gitignore y hay una excepción `!assets/*.wav`, y Piper mete ruido aleatorio en
+cada síntesis, así que regenerar no da un fichero idéntico al byte.
 
 Ese flujo deja al servidor esperando con la foto en la mano mientras suena el
 clip y la persona habla, así que **la foto se reduce en ese hueco**, en un hilo
