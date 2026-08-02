@@ -66,7 +66,12 @@ async def describe_image(
     system_prompt: str,
     user_prompt: str,
     timeout: float = 30.0,
+    preamble: tuple[tuple[str, str], ...] | None = None,
 ) -> str:
+    # Turnos previos, si los hay: van entre el system y el mensaje con la
+    # imagen. Aquí el formato es el de OpenAI, así que valen tal cual.
+    previos = [{"role": rol, "content": texto} for rol, texto in (preamble or ())]
+
     payload = {
         "model": MODEL,
         "temperature": 0.4,
@@ -80,6 +85,7 @@ async def describe_image(
         "reasoning_format": "hidden",
         "messages": [
             {"role": "system", "content": system_prompt},
+            *previos,
             {
                 "role": "user",
                 "content": [

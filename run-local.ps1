@@ -12,7 +12,7 @@ if (-not (Test-Path ".env")) {
     Copy-Item ".env.example" ".env"
     Write-Host ""
     Write-Host "He creado el fichero .env a partir de .env.example." -ForegroundColor Yellow
-    Write-Host "Abrelo, pon tu GEMINI_API_KEY y vuelve a ejecutar este script." -ForegroundColor Yellow
+    Write-Host "Abrelo, pon tu GROQ_API_KEY y vuelve a ejecutar este script." -ForegroundColor Yellow
     Write-Host ""
     exit 1
 }
@@ -38,9 +38,9 @@ Get-Content ".env" | ForEach-Object {
 }
 
 # Solo se avisa de la clave del proveedor que se vaya a usar de verdad.
-$proveedor = if ($env:VISION_PROVIDER) { $env:VISION_PROVIDER } else { "gemini" }
+$proveedor = if ($env:VISION_PROVIDER) { $env:VISION_PROVIDER } else { "groq" }
 if ($proveedor -eq "groq") {
-    $clave = $env:GROQ_API_KEY; $esperado = "tu-api-key-de-groq"; $nombre = "GROQ_API_KEY"
+    $clave = $env:GROQ_API_KEY; $esperado = "la-teva-api-key-de-groq"; $nombre = "GROQ_API_KEY"
 } else {
     $clave = $env:GEMINI_API_KEY; $esperado = "tu-api-key-de-gemini"; $nombre = "GEMINI_API_KEY"
 }

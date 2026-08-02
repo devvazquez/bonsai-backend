@@ -13,7 +13,7 @@ if [ ! -f .env ]; then
   cp .env.example .env
   echo
   echo "He creado el fichero .env a partir de .env.example."
-  echo "Ábrelo, pon tu GEMINI_API_KEY y vuelve a ejecutar este script."
+  echo "Ábrelo, pon tu GROQ_API_KEY y vuelve a ejecutar este script."
   echo
   exit 1
 fi
@@ -36,9 +36,9 @@ set -a
 set +a
 
 # Solo se avisa de la clave del proveedor que se vaya a usar de verdad.
-PROVEEDOR="${VISION_PROVIDER:-gemini}"
+PROVEEDOR="${VISION_PROVIDER:-groq}"
 if [ "$PROVEEDOR" = "groq" ]; then
-  CLAVE="${GROQ_API_KEY:-}"; ESPERADO="tu-api-key-de-groq"; NOMBRE="GROQ_API_KEY"
+  CLAVE="${GROQ_API_KEY:-}"; ESPERADO="la-teva-api-key-de-groq"; NOMBRE="GROQ_API_KEY"
 else
   CLAVE="${GEMINI_API_KEY:-}"; ESPERADO="tu-api-key-de-gemini"; NOMBRE="GEMINI_API_KEY"
 fi
@@ -49,13 +49,25 @@ if [ -z "$CLAVE" ] || [ "$CLAVE" = "$ESPERADO" ]; then
   echo "la voz es Piper y va en local, sin ninguna clave."
 fi
 
+# Por defecto solo escucha en este ordenador. Para abrir /provar desde el
+# móvil hace falta que escuche también en la red local:
+#     BONSAI_HOST=0.0.0.0 ./run-local.sh
+HOST="${BONSAI_HOST:-127.0.0.1}"
+
 echo
 echo "  Servidor:      http://127.0.0.1:8080"
-echo "  Desde el móvil: http://127.0.0.1:8080/provar"
+echo "  Hacer una foto: http://127.0.0.1:8080/provar"
 echo "  Base de datos: http://127.0.0.1:8080/admin  (solo con ADMIN_PASSWORD)"
 echo "  Documentación: http://127.0.0.1:8080/docs"
+if [ "$HOST" = "0.0.0.0" ]; then
+  IP=$(hostname -I 2>/dev/null | awk "{print \$1}")
+  [ -z "$IP" ] && IP=$(ipconfig getifaddr en0 2>/dev/null || true)
+  [ -n "$IP" ] && echo "  Desde el móvil: http://$IP:8080/provar  (misma WiFi)"
+else
+  echo "  Desde el móvil: BONSAI_HOST=0.0.0.0 ./run-local.sh"
+fi
 echo "  Para probarlo: python test_bonsai.py  (en otra terminal)"
 echo "  Ctrl+C para parar."
 echo
 
-exec "$PY" -m uvicorn main:app --host 127.0.0.1 --port 8080 --reload
+exec "$PY" -m uvicorn main:app --host "$HOST" --port 8080 --reload

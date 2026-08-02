@@ -146,6 +146,16 @@ def api_key_for(provider: str) -> str:
     return _modulo(resolve(provider)).api_key()
 
 
+# Turnos de conversación que van delante de la pregunta y la imagen. Es la
+# palabra de activación de las gafas: se le da ya dicha y contestada para que
+# el modelo entienda que está a mitad de una conversación hablada y responda
+# como quien continúa, no como quien recibe una orden suelta.
+PREAMBULO_VEU: tuple[tuple[str, str], ...] = (
+    ("user", "Hey Bonsai!"),
+    ("assistant", "Diga’m!"),
+)
+
+
 async def describe_image(
     provider: str | None,
     image_base64: str,
@@ -153,8 +163,14 @@ async def describe_image(
     user_prompt: str,
     api_key: str | None = None,
     timeout: float = 30.0,
+    preamble: tuple[tuple[str, str], ...] | None = None,
 ) -> str:
-    """Describe la imagen con el proveedor pedido (o el de por defecto)."""
+    """Describe la imagen con el proveedor pedido (o el de por defecto).
+
+    `preamble` son turnos ("user"/"assistant", texto) que se insertan entre el
+    system prompt y el mensaje con la imagen. Lo usa /ask para dar por dicha la
+    palabra de activación (ver PREAMBULO_VEU).
+    """
     elegido = resolve(provider)
     modulo = _modulo(elegido)
     return await modulo.describe_image(
@@ -163,6 +179,7 @@ async def describe_image(
         system_prompt=system_prompt,
         user_prompt=user_prompt,
         timeout=timeout,
+        preamble=preamble,
     )
 
 

@@ -6,6 +6,11 @@ descripción al proveedor de visión (`vision.py`: Groq o Gemini) y devuelve el
 audio en crudo y en streaming, listo para el I2S del MAX98357A, sin base64 ni
 nada que descodificar en el microcontrolador.
 
+`/ask` es el mismo camino pero con voz por delante: la foto y, a continuación,
+lo que está diciendo quien lleva las gafas. Se transcribe con Whisper turbo en
+Groq (`stt.py`) y esa frase pasa a ser la pregunta que se le hace al modelo de
+visión.
+
 El resto es servicio: `/memory` para los recuerdos, `/speak` para texto a voz
 suelto, la página `/provar` para probarlo desde el móvil y el panel `/admin`
 (`panel.py`) para administrar la base de datos. No hay ninguna aplicación web
@@ -21,7 +26,7 @@ import time
 from datetime import datetime
 from typing import Any
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel, Field
@@ -29,6 +34,7 @@ from pydantic import BaseModel, Field
 import imagen
 import memory
 import piper_tts
+import stt
 import tts
 import vision
 from vision import VisionRateLimit, describe_error
@@ -205,16 +211,144 @@ def health() -> dict[str, Any]:
             "format": tts.format_for(),
             "piper": tts.piper_status(),
         },
+        "stt": {
+            # Lo que necesita /ask. Va aparte de "providers" porque siempre es
+            # Groq, aunque la visión sea Gemini: la clave que mira es la misma
+            # GROQ_API_KEY, y sin ella /ask da 500 aunque /look funcione.
+            "model": stt.MODEL,
+            "keyConfigured": bool(stt.api_key()),
+            "maxAudioSeconds": ASK_MAX_SEGUNDOS,
+        },
     }
 
 
-async def _describir(req: LookRequest) -> tuple[str, dict[str, str]]:
-    """La parte de visión de /look.
+def _plan_de_audio(
+    tts_provider: str | None,
+    audio_format: str | None,
+    lang: str | None,
+    voice: str | None,
+    sample_rate: int | None,
+) -> dict[str, Any]:
+    """Decide y valida con qué se va a hablar, antes de gastar nada.
+
+    Se hace al principio de la petición, antes de la visión y antes de leer el
+    audio del micro: si el formato pedido no existe, más vale decirlo enseguida
+    que después de haber gastado cuota o de haber subido medio megabyte.
+    """
+    try:
+        proveedor = tts.effective_provider(tts_provider)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+    # Con edge-tts el formato no se elige: Microsoft manda MP3 y punto. Con
+    # Piper sí, porque las muestras salen del modelo y se convierten aquí.
+    if proveedor == "edge":
+        if audio_format and audio_format.lower() != "mp3":
+            raise HTTPException(
+                400,
+                f"Con edge-tts el audio solo puede ser mp3, no {audio_format!r}. "
+                "Para pcm16 o mulaw usa Piper, que es el de por defecto.",
+            )
+        formato = "mp3"
+    else:
+        formato = (audio_format or "pcm16").lower()
+        if formato not in piper_tts.FORMATOS:
+            raise HTTPException(
+                400,
+                f"Formato desconocido: {formato!r}. Usa uno de: "
+                f"{', '.join(piper_tts.FORMATOS)}",
+            )
+
+    if sample_rate and sample_rate not in piper_tts.SAMPLE_RATES:
+        raise HTTPException(
+            400,
+            f"sampleRate no soportado: {sample_rate}. Usa uno de: "
+            f"{', '.join(str(s) for s in piper_tts.SAMPLE_RATES)}",
+        )
+
+    voz = tts.voice_for(lang or tts.DEFAULT_LANG, voice, proveedor)
+    if formato == "mp3":
+        rate, bits = 24000, 16          # lo que devuelve edge-tts
+    else:
+        rate = sample_rate or piper_tts.sample_rate_de(voz)
+        bits = 8 if formato == "mulaw" else 16
+
+    return {"tts": proveedor, "formato": formato, "voz": voz,
+            "rate": rate, "bits": bits}
+
+
+# Content-Type de cada formato, para que el cliente no tenga que adivinar.
+_TIPOS_AUDIO = {
+    "pcm16": "audio/L16;rate={rate};channels=1",
+    "mulaw": "audio/basic;rate={rate}",
+    "wav": "audio/wav",
+    "mp3": "audio/mpeg",
+}
+
+
+async def _responde_con_voz(
+    texto: str, plan: dict[str, Any], cabeceras: dict[str, str]
+) -> StreamingResponse:
+    """Convierte el texto en audio y lo devuelve en streaming.
+
+    Es el final común de /look y de /ask: los dos acaban con una frase que hay
+    que decir en voz alta y en el formato que quiera el I2S.
+    """
+    formato, rate = plan["formato"], plan["rate"]
+    if formato == "mp3":
+        trozos = tts.stream(texto, plan["voz"], "edge")
+    else:
+        trozos = piper_tts.stream_raw(texto, plan["voz"], formato, rate)
+
+    expuestas = sorted({*cabeceras, "X-Bonsai-Text", "X-Bonsai-Tts",
+                        "X-Bonsai-Format", "X-Bonsai-Rate", "X-Bonsai-Bits",
+                        "X-Bonsai-Channels", "X-Bonsai-Voice"})
+    cabeceras.update({
+        "X-Bonsai-Text": base64.b64encode(texto.encode()).decode("ascii"),
+        "X-Bonsai-Tts": plan["tts"],
+        "X-Bonsai-Format": formato,
+        "X-Bonsai-Rate": str(rate),
+        "X-Bonsai-Bits": str(plan["bits"]),
+        "X-Bonsai-Channels": "1",
+        "X-Bonsai-Voice": plan["voz"],
+        # Sin esto el navegador no deja leer las X-Bonsai-* desde JavaScript.
+        "Access-Control-Expose-Headers": ", ".join(expuestas),
+    })
+
+    # El primer trozo se pide antes de responder: si el TTS falla, todavía
+    # estamos a tiempo de devolver un error de verdad y no un 200 vacío.
+    try:
+        primero = await anext(trozos)
+    except StopAsyncIteration:
+        raise HTTPException(502, f"{plan['tts']} no devolvió audio.") from None
+    except Exception as e:
+        raise HTTPException(
+            502, f"Fallo al generar el audio: {describe_error(e)}"
+        ) from e
+
+    async def cuerpo():
+        if formato == "wav":
+            yield piper_tts.cabecera_wav(rate, plan["bits"])
+        yield primero
+        async for trozo in trozos:
+            yield trozo
+
+    return StreamingResponse(
+        cuerpo(),
+        media_type=_TIPOS_AUDIO[formato].format(rate=rate),
+        headers=cabeceras,
+    )
+
+
+async def _describir(
+    req: LookRequest, preamble: tuple[tuple[str, str], ...] | None = None
+) -> tuple[str, dict[str, str]]:
+    """La parte de visión de /look y de /ask.
 
     Devuelve el texto y unas cabeceras con el detalle de qué lo generó, para
-    que /look pueda darlo sin cuerpo JSON.
+    poder darlo sin cuerpo JSON (el cuerpo es el audio).
     """
-    texto, timings, provider = await _vision_paso(req)
+    texto, timings, provider = await _vision_paso(req, preamble)
     return texto, {
         "X-Bonsai-Provider": provider,
         "X-Bonsai-Model": vision.model_for(provider),
@@ -225,7 +359,9 @@ async def _describir(req: LookRequest) -> tuple[str, dict[str, str]]:
     }
 
 
-async def _vision_paso(req: LookRequest) -> tuple[str, dict[str, int], str]:
+async def _vision_paso(
+    req: LookRequest, preamble: tuple[tuple[str, str], ...] | None = None
+) -> tuple[str, dict[str, int], str]:
     try:
         provider = vision.resolve(req.provider)
     except ValueError as e:
@@ -267,6 +403,7 @@ async def _vision_paso(req: LookRequest) -> tuple[str, dict[str, int], str]:
             image_base64=imagen_b64,
             system_prompt=build_system_prompt(lang, memory_context),
             user_prompt=req.prompt or "¿Qué tengo delante? Dímelo en una o dos frases.",
+            preamble=preamble,
         )
     except VisionRateLimit as e:
         # 429 y no 502: no es que el servidor falle, es que hay que esperar.
@@ -309,86 +446,208 @@ async def look(req: LookRequest) -> StreamingResponse:
     cabeceras HTTP son ASCII), y el formato en `X-Bonsai-Rate`, `-Bits` y
     `-Channels`, para no tener que adivinar nada al configurar el I2S.
     """
-    try:
-        tts_provider = tts.effective_provider(req.tts)
-    except ValueError as e:
-        raise HTTPException(400, str(e)) from e
+    plan = _plan_de_audio(req.tts, req.audioFormat, req.lang, req.voice,
+                          req.sampleRate)
+    texto, cabeceras = await _describir(req)
+    return await _responde_con_voz(texto, plan, cabeceras)
 
-    # Con edge-tts el formato no se elige: Microsoft manda MP3 y punto. Con
-    # Piper sí, porque las muestras salen del modelo y se convierten aquí.
-    if tts_provider == "edge":
-        if req.audioFormat and req.audioFormat.lower() != "mp3":
-            raise HTTPException(
-                400,
-                f"Con edge-tts el audio solo puede ser mp3, no {req.audioFormat!r}. "
-                "Para pcm16 o mulaw usa Piper, que es el de por defecto.",
-            )
-        formato = "mp3"
-    else:
-        formato = (req.audioFormat or "pcm16").lower()
-        if formato not in piper_tts.FORMATOS:
-            raise HTTPException(
-                400,
-                f"Formato desconocido: {formato!r}. Usa uno de: "
-                f"{', '.join(piper_tts.FORMATOS)}",
-            )
 
-    voz = tts.voice_for(req.lang or tts.DEFAULT_LANG, req.voice, tts_provider)
-    if req.sampleRate and req.sampleRate not in piper_tts.SAMPLE_RATES:
+# --------------------------------------------------------------------------
+# /ask: foto + voz -> respuesta hablada
+# --------------------------------------------------------------------------
+# Tope de la foto. Una de la OV3660 a 3 MP no llega a 1 MB; 8 es de sobra y
+# evita que un cliente roto reserve memoria sin fin.
+ASK_MAX_IMAGEN = int(os.environ.get("ASK_MAX_IMAGE_BYTES", str(8 * 1024 * 1024)))
+
+# Tope de la grabación. No es solo memoria: Whisper cobra por segundos de
+# audio, así que un micro que se quede abierto no debe poder gastar la cuota
+# del día. 30 s es mucho más de lo que dura una pregunta.
+ASK_MAX_SEGUNDOS = float(os.environ.get("ASK_MAX_AUDIO_SECONDS", "30"))
+
+# Por debajo de esto no hay ni una palabra: es un botón pulsado sin querer.
+ASK_MIN_SEGUNDOS = 0.25
+
+
+async def _lee_trama(
+    request: Request, max_audio_bytes: int
+) -> tuple[bytes, bytes]:
+    """Lee el cuerpo de /ask: primero la foto, luego el audio hasta que acabe.
+
+    El cuerpo va en crudo y con esta forma:
+
+        4 bytes  uint32 big-endian  = cuántos bytes ocupa la foto
+        N bytes  la foto (JPEG)
+        resto    el audio del micro, hasta que se cierra la petición
+
+    Se lee del stream según llega, no con `await request.body()`, para poder
+    guardar la foto en cuanto está completa mientras la persona todavía está
+    hablando. Es la razón de que el audio vaya "streameado": la subida se
+    solapa con la frase en vez de ir después.
+    """
+    trozos = request.stream().__aiter__()
+    buf = bytearray()
+
+    async def toma(n: int) -> bytes:
+        while len(buf) < n:
+            try:
+                buf.extend(await trozos.__anext__())
+            except StopAsyncIteration:
+                raise HTTPException(
+                    400,
+                    f"El cuerpo se acabó antes de tiempo: esperaba {n} bytes y "
+                    f"llegaron {len(buf)}. El formato es "
+                    "[4 bytes de longitud][foto][audio].",
+                ) from None
+        salida = bytes(buf[:n])
+        del buf[:n]
+        return salida
+
+    n_imagen = int.from_bytes(await toma(4), "big")
+    if not 0 < n_imagen <= ASK_MAX_IMAGEN:
         raise HTTPException(
             400,
-            f"sampleRate no soportado: {req.sampleRate}. Usa uno de: "
-            f"{', '.join(str(s) for s in piper_tts.SAMPLE_RATES)}",
+            f"Longitud de imagen imposible: {n_imagen} bytes (el máximo son "
+            f"{ASK_MAX_IMAGEN}). ¿Los 4 primeros bytes van en big-endian?",
+        )
+    foto = await toma(n_imagen)
+
+    audio = bytearray(buf)
+    buf.clear()
+    async for trozo in trozos:
+        audio.extend(trozo)
+        if len(audio) > max_audio_bytes:
+            raise HTTPException(
+                413,
+                f"Audio demasiado largo: el tope son {ASK_MAX_SEGUNDOS:g} s "
+                "(ASK_MAX_AUDIO_SECONDS).",
+            )
+    return foto, bytes(audio)
+
+
+@app.post("/ask", dependencies=[Depends(require_token)])
+async def ask(
+    request: Request,
+    deviceId: str = "bonsai-01",
+    lang: str | None = None,
+    provider: str | None = None,
+    tts_provider: str | None = Query(default=None, alias="tts"),
+    audioFormat: str | None = None,
+    sampleRate: int | None = None,
+    micRate: int = 16000,
+    maxSide: int | None = None,
+) -> StreamingResponse:
+    """Foto + pregunta hablada -> respuesta hablada, en una sola petición.
+
+    Es `/look` con voz por delante: en vez de mandar la pregunta escrita, las
+    gafas mandan la foto y a continuación lo que está diciendo quien las lleva.
+    Aquí se transcribe con Whisper turbo en Groq y el texto pasa a ser la
+    pregunta que se le hace al modelo de visión.
+
+    El cuerpo va en crudo, sin JSON ni base64 (ver `_lee_trama`):
+
+        [4 bytes de longitud][foto JPEG][audio del micro]
+
+    El audio puede ser PCM16 mono en crudo, que es lo que da el I2S del INMP441
+    (di a qué frecuencia con `micRate`), o un fichero con cabecera (WAV, OGG,
+    MP3): se detecta solo.
+
+    La respuesta es exactamente la de `/look`: el audio en crudo y en
+    streaming, con el texto en `X-Bonsai-Text`. Además vuelve lo que se entendió
+    en `X-Bonsai-Transcript`, para poder ver por qué ha contestado eso.
+
+    Sobre la cuota: transcribir **no** gasta los tokens de texto de Groq
+    (Whisper se factura por segundos de audio), así que probar `/ask` no te
+    deja sin `/look`.
+    """
+    # Todo lo que se puede validar sin gastar nada se valida antes de que el
+    # dispositivo suba medio megabyte para nada.
+    plan = _plan_de_audio(tts_provider, audioFormat, lang, None, sampleRate)
+    if micRate <= 0:
+        raise HTTPException(400, f"micRate ha de ser positivo, no {micRate}.")
+    if not stt.api_key():
+        raise HTTPException(
+            500,
+            "GROQ_API_KEY no está configurada: /ask la necesita para "
+            "transcribir, aunque la visión vaya con Gemini.",
         )
 
-    texto, cabeceras = await _describir(req)
+    t_total = time.perf_counter()
+    tope = int(ASK_MAX_SEGUNDOS * micRate * 2)
+    foto, audio = await _lee_trama(request, tope)
 
-    if formato == "mp3":
-        rate, bits = 24000, 16          # lo que devuelve edge-tts
-        trozos = tts.stream(texto, voz, "edge")
-    else:
-        rate = req.sampleRate or piper_tts.sample_rate_de(voz)
-        bits = 8 if formato == "mulaw" else 16
-        trozos = piper_tts.stream_raw(texto, voz, formato, rate)
+    # La foto se guarda ya, antes de transcribir ni describir: si algo falla
+    # después, queda constancia de qué estaba mirando.
+    capture_id, _ruta = await asyncio.to_thread(memory.save_capture, deviceId, foto)
 
-    cabeceras.update({
-        "X-Bonsai-Text": base64.b64encode(texto.encode()).decode("ascii"),
-        "X-Bonsai-Tts": tts_provider,
-        "X-Bonsai-Format": formato,
-        "X-Bonsai-Rate": str(rate),
-        "X-Bonsai-Bits": str(bits),
-        "X-Bonsai-Channels": "1",
-        "X-Bonsai-Voice": voz,
-        # Sin esto el navegador no deja leer las X-Bonsai-* desde JavaScript.
-        "Access-Control-Expose-Headers": "X-Bonsai-Text, X-Bonsai-Tts, "
-        "X-Bonsai-Format, X-Bonsai-Rate, X-Bonsai-Bits, X-Bonsai-Channels, "
-        "X-Bonsai-Voice, X-Bonsai-Provider, X-Bonsai-Model, "
-        "X-Bonsai-Vision-Ms, X-Bonsai-Resize-Ms",
-    })
+    segundos = stt.duracion_pcm16(len(audio), micRate)
+    if segundos < ASK_MIN_SEGUNDOS:
+        raise HTTPException(
+            400,
+            f"Apenas hay audio ({segundos:.2f} s). ¿Se ha soltado el botón "
+            "antes de hablar o el micro no está dando muestras?",
+        )
 
-    # El primer trozo se pide antes de responder: si el TTS falla, todavía
-    # estamos a tiempo de devolver un error de verdad y no un 200 vacío.
+    t0 = time.perf_counter()
     try:
-        primero = await anext(trozos)
-    except StopAsyncIteration:
-        raise HTTPException(502, f"{tts_provider} no devolvió audio.") from None
+        transcripcion = await stt.transcribe(
+            audio, sample_rate=micRate, lang=(lang or tts.DEFAULT_LANG).lower()
+        )
+    except VisionRateLimit as e:
+        cabeceras = {}
+        if e.retry_after is not None:
+            cabeceras["Retry-After"] = str(max(1, round(e.retry_after)))
+        raise HTTPException(429, str(e), headers=cabeceras) from e
     except Exception as e:
         raise HTTPException(
-            502, f"Fallo al generar el audio: {describe_error(e)}"
+            502, f"Fallo al transcribir: {describe_error(e)}"
         ) from e
+    stt_ms = int((time.perf_counter() - t0) * 1000)
 
-    async def cuerpo():
-        if formato == "wav":
-            yield piper_tts.cabecera_wav(rate, bits)
-        yield primero
-        async for trozo in trozos:
-            yield trozo
+    if not transcripcion:
+        # Se guarda igualmente: una transcripción vacía repetida es el síntoma
+        # de un micro mal configurado, y así se ve en /admin.
+        await asyncio.to_thread(
+            memory.finish_capture, capture_id, audio_secs=round(segundos, 2),
+            stt_ms=stt_ms, transcript="",
+        )
+        raise HTTPException(
+            422,
+            f"No se ha entendido nada en {segundos:.1f} s de audio. Si pasa "
+            "siempre, mira la ganancia del micro; si es puntual, vuelve a "
+            "preguntar o tira de /look, que no necesita voz.",
+        )
 
-    tipos = {"pcm16": f"audio/L16;rate={rate};channels=1",
-             "mulaw": f"audio/basic;rate={rate}",
-             "wav": "audio/wav",
-             "mp3": "audio/mpeg"}
-    return StreamingResponse(cuerpo(), media_type=tipos[formato], headers=cabeceras)
+    peticion = LookRequest(
+        image=base64.b64encode(foto).decode("ascii"),
+        deviceId=deviceId,
+        prompt=transcripcion,
+        lang=lang,
+        provider=provider,
+        maxSide=maxSide,
+    )
+    # Aquí está la diferencia con /look: se le dan por dichos los dos turnos de
+    # la palabra de activación, para que conteste como quien sigue una
+    # conversación y no como quien recibe una orden suelta.
+    texto, cabeceras = await _describir(peticion, vision.PREAMBULO_VEU)
+
+    total_ms = int((time.perf_counter() - t_total) * 1000)
+    await asyncio.to_thread(
+        memory.finish_capture, capture_id,
+        audio_secs=round(segundos, 2), transcript=transcripcion, reply=texto,
+        stt_ms=stt_ms, vision_ms=int(cabeceras.get("X-Bonsai-Vision-Ms", 0)),
+        total_ms=total_ms,
+    )
+    await asyncio.to_thread(memory.prune_captures, deviceId)
+
+    cabeceras.update({
+        "X-Bonsai-Transcript": base64.b64encode(
+            transcripcion.encode()).decode("ascii"),
+        "X-Bonsai-Stt-Ms": str(stt_ms),
+        "X-Bonsai-Stt-Model": stt.MODEL,
+        "X-Bonsai-Audio-Secs": f"{segundos:.2f}",
+        "X-Bonsai-Capture-Id": capture_id,
+    })
+    return await _responde_con_voz(texto, plan, cabeceras)
 
 
 @app.post("/speak", dependencies=[Depends(require_token)])

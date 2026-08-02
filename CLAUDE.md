@@ -122,9 +122,39 @@ que engañe porque sintetiza de cero cada vez. Una petición completa con foto p
 Ojo: **Piper devuelve WAV y edge-tts MP3**. El formato va en `audioFormat`, no lo des por
 hecho. El WAV pesa 247 KB frente a 66 KB de la misma frase en MP3, que importa por BLE.
 
-## Solo hay un endpoint de imagen: `/look`
+## `/ask`: la foto y la pregunta dicha en voz alta
 
-`/describe` se eliminó. Devolvía JSON con el audio en base64 (33 % más de bytes y algo que
+Mismo camino que `/look` pero con voz por delante. El cuerpo va en crudo,
+`[4 bytes de longitud][foto JPEG][audio]`, y se lee del stream según llega: la
+foto se guarda en cuanto está entera, mientras la persona todavía habla. Por
+eso el audio va "streameado" — la subida se solapa con la frase.
+
+Tres cosas que conviene no volver a averiguar:
+
+1. **Whisper NO gasta la cuota de texto de Groq.** Se factura por segundos de
+   audio, así que probar `/ask` no te deja sin `/look`. Aun así el tope de
+   30 s (`ASK_MAX_AUDIO_SECONDS`) está por algo: un micro que se quede abierto
+   sí puede quemar la cuota de audio del día.
+2. **La clave es la misma `GROQ_API_KEY`.** Aunque pongas `VISION_PROVIDER=gemini`,
+   `/ask` necesita Groq para transcribir y devuelve 500 sin ella.
+3. **Al PCM del micro hay que ponerle cabecera WAV con las longitudes de
+   verdad.** No sirve `piper_tts.cabecera_wav`, que pone 0xFFFFFFFF porque
+   responde sobre la marcha: Whisper rechaza un WAV con longitudes imposibles.
+   Por eso hay una `stt.cabecera_wav` aparte.
+
+Antes de la foto y la pregunta se le dan por dichos dos turnos —
+`user: Hey Bonsai!` / `assistant: Diga’m!` (`vision.PREAMBULO_VEU`)— para que
+conteste como quien sigue una conversación. `/look` no los lleva.
+
+Para probarlo sin gastar nada: `python test_ask.py`. Sustituye el cliente HTTP
+por uno de mentira y comprueba el payload de verdad (los dos turnos, la
+cabecera WAV, el modelo). Ojo: `stt.py` y `groq_vision.py` hacen
+`from vision import get_client`, así que parchear solo `vision.get_client` no
+les llega — hay que tocar los tres módulos.
+
+## Endpoints de imagen: `/look` y `/ask`
+
+Solo hay estos dos. `/describe` se eliminó. Devolvía JSON con el audio en base64 (33 % más de bytes y algo que
 descodificar) y solo tenía sentido si hubiera una app web en medio. No la hay: la ESP32
 llama a la API directamente, y si algún día hay app será para configurar el dispositivo de
 vez en cuando, no para que funcionen las gafas.

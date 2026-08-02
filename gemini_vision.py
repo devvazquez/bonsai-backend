@@ -78,7 +78,11 @@ def _segundos_de_espera(resp: httpx.Response) -> float | None:
 
 
 def _payload(
-    image_base64: str, system_prompt: str, user_prompt: str, con_thinking: bool
+    image_base64: str,
+    system_prompt: str,
+    user_prompt: str,
+    con_thinking: bool,
+    preamble: tuple[tuple[str, str], ...] | None = None,
 ) -> dict:
     generation: dict = {
         "temperature": 0.4,
@@ -101,9 +105,17 @@ def _payload(
             res if res.startswith("MEDIA_RESOLUTION_") else f"MEDIA_RESOLUTION_{res}"
         )
 
+    # Turnos previos, si los hay. Gemini llama "model" a lo que OpenAI llama
+    # "assistant", así que hay que traducir el rol.
+    previos = [
+        {"role": "model" if rol == "assistant" else "user", "parts": [{"text": texto}]}
+        for rol, texto in (preamble or ())
+    ]
+
     return {
         "systemInstruction": {"parts": [{"text": system_prompt}]},
         "contents": [
+            *previos,
             {
                 "role": "user",
                 "parts": [
@@ -156,6 +168,7 @@ async def describe_image(
     system_prompt: str,
     user_prompt: str,
     timeout: float = 30.0,
+    preamble: tuple[tuple[str, str], ...] | None = None,
 ) -> str:
     global _sin_thinking_level
 
@@ -163,7 +176,8 @@ async def describe_image(
     resp = await get_client().post(
         url,
         json=_payload(
-            image_base64, system_prompt, user_prompt, not _sin_thinking_level
+            image_base64, system_prompt, user_prompt,
+            not _sin_thinking_level, preamble,
         ),
         headers=auth_headers(api_key),
         timeout=timeout,
@@ -179,7 +193,7 @@ async def describe_image(
         _sin_thinking_level = True
         resp = await get_client().post(
             url,
-            json=_payload(image_base64, system_prompt, user_prompt, False),
+            json=_payload(image_base64, system_prompt, user_prompt, False, preamble),
             headers=auth_headers(api_key),
             timeout=timeout,
         )

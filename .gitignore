@@ -17,3 +17,5 @@ voices/
 
 # Sesiones del panel /admin (NiceGUI las guarda en el directorio de trabajo)
 .nicegui/
+data/captures/
+captures/

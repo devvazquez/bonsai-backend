@@ -6,9 +6,11 @@ tens al davant: per orientar-te, per llegir un cartell o un menú, per saber qu�
 
 ```mermaid
 flowchart LR
-    A["Ulleres<br/>(ESP32-S3 + OV3660)"] -- "POST /look<br/>(foto en base64)" --> C["Aquest backend"]
-    C -- redueix a 896 px --> D["Gemini o Groq"]
-    D -- descripció --> C
+    A["Ulleres<br/>(ESP32-S3 + OV3660)"] -- "POST /look (foto)<br/>POST /ask (foto + veu)" --> C["Aquest backend"]
+    C -. "només /ask" .-> W["Whisper turbo<br/>(Groq)"]
+    W -. pregunta .-> C
+    C -- redueix a 896 px --> D["Qwen (Groq)<br/>o Gemini"]
+    D -- resposta --> C
     C -- text --> E["Piper<br/>(en local, veu catalana)"]
     E -- mostres --> C
     C -- "PCM16 en streaming" --> A
@@ -16,9 +18,17 @@ flowchart LR
 ```
 
 **L'ESP32 crida l'API directament**, sense cap aplicació web al mig. Per això
-hi ha un únic endpoint d'imatge, `/look`, fet a mida del microcontrolador: rep
-la foto i torna l'àudio en cru i en streaming, llest per a l'I2S.
+els dos endpoints d'imatge estan fets a mida del microcontrolador: reben la
+foto i tornen l'àudio en cru i en streaming, llest per a l'I2S.
 
+- **`/look`** — foto (i una pregunta escrita, si de cas) → resposta parlada.
+- **`/ask`** — foto **i la pregunta dita en veu alta**. Es transcriu amb
+  Whisper turbo a Groq i la frase passa a ser la pregunta. Una sola petició.
+
+Les peces:
+
+- **Veu a text**: **Whisper turbo** a Groq, només per a `/ask`. Es factura per
+  segons d'àudio, no per tokens: no toca la quota de les fotos.
 - **Visió**: **Groq** per defecte (552 ms, molt regular, quota justa) o
   **Gemini** (més lent, quota molt més folgada per desenvolupar).
 - **Veu**: **Piper** en local per defecte (205 ms, veu catalana
@@ -119,6 +129,7 @@ bonsai> help
 | Mètode | Ruta | Descripció |
 | --- | --- | --- |
 | `POST` | `/look` | **Endpoint principal**: foto → àudio en cru i en streaming |
+| `POST` | `/ask` | Foto + pregunta dita en veu alta → àudio. Transcriu amb Whisper |
 | `POST` | `/speak?text=...&lang=ca` | Només text a veu |
 | `GET`/`POST` | `/memory` | Dispositius i records |
 | `PATCH`/`DELETE` | `/memory/{deviceId}/{id}` | Corregeix o esborra un record |
@@ -161,6 +172,68 @@ mono — exactament el que vol l'I2S del MAX98357A, sense conversió. Amb
 | `502` | El proveïdor ha fallat de debò; el detall va al cos |
 | `500` | Falta la clau del proveïdor triat |
 | `400` | Paràmetres invàlids (`provider`, `tts`, `audioFormat`...) |
+
+### `POST /ask`
+
+Igual que `/look`, però la pregunta va dita en veu alta en comptes d'escrita.
+El cos va **en cru, sense JSON ni base64**, amb aquesta forma:
+
+```
+4 bytes   uint32 big-endian   quants bytes ocupa la foto
+N bytes   la foto (JPEG)
+la resta  l'àudio del micròfon, fins que es tanca la petició
+```
+
+Es llegeix a mesura que arriba: la foto es guarda en quant està sencera,
+mentre la persona encara està parlant. Per això l'àudio va en streaming — la
+pujada se solapa amb la frase en comptes d'anar-hi al darrere.
+
+L'àudio pot ser **PCM16 mono en cru** (el que dona l'I2S de l'INMP441; digues
+a quina freqüència amb `micRate`) o un fitxer amb capçalera (WAV, OGG, MP3):
+es detecta sol.
+
+Els paràmetres van a la query: `deviceId`, `lang`, `provider`, `tts`,
+`audioFormat`, `sampleRate`, `micRate` (per defecte 16000) i `maxSide`.
+
+```bash
+# Provar-ho des del portàtil amb un WAV qualsevol
+python - <<'EOF' > cos.bin
+import struct, sys
+foto = open("foto.jpg", "rb").read()
+sys.stdout.buffer.write(struct.pack(">I", len(foto)) + foto + open("veu.wav", "rb").read())
+EOF
+curl -X POST "http://127.0.0.1:8080/ask?deviceId=proves&audioFormat=wav" \
+     --data-binary @cos.bin -D capçaleres.txt -o resposta.wav
+```
+
+La resposta és la mateixa que la de `/look` i, a més:
+
+```
+X-Bonsai-Transcript: <base64>   X-Bonsai-Stt-Ms: 380
+X-Bonsai-Audio-Secs: 2.10       X-Bonsai-Capture-Id: <uuid>
+```
+
+Abans de la foto i la pregunta se li donen per dits dos torns de conversa —
+`user: Hey Bonsai!` i `assistant: Diga'm!` — perquè el model contesti com qui
+continua una conversa i no com qui rep una ordre solta.
+
+Cada petició deixa la foto a `captures/` i una fila a la taula `captures`
+(què es va dir, què es va respondre i els temps), visible a `/admin`. Se'n
+conserven les 100 últimes per dispositiu; les velles es borren amb el fitxer.
+
+| Codi | Vol dir |
+| --- | --- |
+| `400` | La trama està mal formada, o amb prou feines hi ha àudio |
+| `413` | Més de 30 s d'àudio (`ASK_MAX_AUDIO_SECONDS`) |
+| `422` | No s'ha entès res. Mira el guany del micròfon, o tira de `/look` |
+| `429` | Quota esgotada, amb `Retry-After` |
+
+**Sobre la quota**: transcriure no gasta els tokens de text de Groq (Whisper
+es factura per segons d'àudio), o sigui que provar `/ask` no et deixa sense
+`/look`. Ara bé, la clau és la mateixa: sense `GROQ_API_KEY`, `/ask` torna 500
+encara que la visió vagi per Gemini.
+
+---
 
 Tots els endpoints excepte `/health` i `/provar` demanen
 `X-API-Token` si `BONSAI_API_TOKEN` està definit. `/admin` no fa servir el
@@ -229,6 +302,8 @@ docker compose cp bonsai:/data/bonsai.db ./backup-$(date +%F).db
 | `TTS_PROVIDER` | `piper` | `piper` (local) o `edge` (Microsoft) |
 | `BONSAI_API_TOKEN` | buit | Protegeix l'API. Buit = sense autenticació |
 | `IMAGE_MAX_SIDE` | `896` | Costat llarg al qual es redueix la foto. `0` ho desactiva |
+| `GROQ_STT_MODEL` | `whisper-large-v3-turbo` | Model de transcripció de `/ask` |
+| `ASK_MAX_AUDIO_SECONDS` | `30` | Topall de gravació de `/ask` |
 | `ADMIN_PASSWORD` | buit | Contrasenya de `/admin`. Buida = la ruta ni existeix |
 | `BONSAI_DOMAIN` | — | Domini per a l'HTTPS (perfil `caddy`) |
 | `ALLOWED_ORIGINS` | `*` | Orígens CORS (només rellevant si hi ha una app web) |
@@ -244,12 +319,14 @@ a [`.env.example`](.env.example), amb el perquè de cada valor per defecte.
 | --- | --- |
 | `main.py` | L'API: endpoints, autenticació, construcció del prompt |
 | `vision.py`, `groq_vision.py`, `gemini_vision.py` | Proveïdors de visió |
+| `stt.py` | Transcripció amb Whisper turbo a Groq (només `/ask`) |
 | `imagen.py` | Redueix la foto abans d'enviar-la al proveïdor |
 | `tts.py`, `piper_tts.py` | Motors de veu (Piper en local, edge-tts) |
 | `memory.py` | Records per dispositiu en SQLite |
 | `static/probar.html` | La pàgina `/provar` |
 | `panel.py` | El panell `/admin` per administrar la base de dades |
 | `test_bonsai.py` | Terminal de proves, sense dependències |
+| `test_ask.py` | Prova de `/ask` de punta a punta, sense gastar quota |
 | `bench_latency.py` | Banc de proves de latència, amb topall de quota |
 | `docs/BENCHMARKS.md` | Totes les mesures i el perquè de cada decisió |
 
