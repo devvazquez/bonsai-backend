@@ -395,6 +395,41 @@ sense codificar res.
   a la PSRAM per enviar-ho al final: el servidor ja està preparat per llegir-ho
   a trossos i així la foto es desa mentre encara parles.
 
+### Saber quan la persona ha acabat de parlar
+
+Això ho ha de decidir el firmware: el backend només veu bytes, i el que li diu
+"ja està" és que tanquis el cos (el tros de longitud 0). El backend no
+t'apressa —espera fins a `ASK_SILENCE_TIMEOUT_SECONDS` sense rebre res abans de
+donar-ho per perdut— però tampoc t'ajuda a decidir-ho.
+
+El que funciona amb un micròfon i poca CPU és **energia amb marge de cua**, no
+un VAD de debò:
+
+1. Calcula el RMS de cada bloc de 20-30 ms (una suma de quadrats; cap ni sobra
+   a l'ESP32-S3).
+2. Mesura el soroll de fons durant els primers ~300 ms, quan encara no parla
+   ningú, i posa el llindar per sobre. Un llindar fix falla: no sona igual una
+   habitació que un carrer.
+3. Considera que ha acabat quan portis **700-900 ms seguits** per sota del
+   llindar. Menys i talles les pauses entre paraules; més i s'hi noten els
+   segons d'espera.
+4. Posa dos topalls: un mínim (no tanquis abans d'1 s, o agafaràs una tos per
+   una pregunta) i un màxim (els 30 s de `ASK_MAX_AUDIO_SECONDS`, que el
+   servidor rebutjarà igualment amb un 413).
+
+Dues coses que et poden fer trampes:
+
+- **El clip del «Diga'm» sonant pel mateix altaveu.** Si obres el micròfon
+  abans que acabi, el sents i el prens per veu. Obre'l després, que és el que
+  ja tenies pensat.
+- **Enviar silenci no és gratis del tot.** Whisper cobra per segons d'àudio, i
+  una cua d'un segon per pregunta se suma. No és greu, però no posis 3 s de
+  marge "per si de cas".
+
+Si algun dia vols un VAD de veritat, Silero VAD té una versió petita per
+microcontroladors, però per una frase que comença just després d'un to
+d'invitació, l'energia amb marge de cua ja va bé.
+
 ## Altres apunts
 
 - **Model de Groq**: Groq reanomena i retira models sovint. Si `/look`

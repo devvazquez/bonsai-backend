@@ -467,6 +467,12 @@ ASK_MAX_SEGUNDOS = float(os.environ.get("ASK_MAX_AUDIO_SECONDS", "30"))
 # Por debajo de esto no hay ni una palabra: es un botón pulsado sin querer.
 ASK_MIN_SEGUNDOS = 0.25
 
+# Cuánto se espera sin recibir ni un trozo antes de dar la petición por
+# perdida. Tiene que caber el «Digue'm» de las gafas más lo que la persona
+# tarde en arrancar a hablar, y aun así soltar la conexión si el firmware se
+# cuelga a media grabación.
+ASK_SILENCIO = float(os.environ.get("ASK_SILENCE_TIMEOUT_SECONDS", "15"))
+
 
 class _Trama:
     """Lee el cuerpo de /ask a medida que llega, en dos tiempos.
@@ -514,10 +520,32 @@ class _Trama:
             )
         return await self._toma(n)
 
-    async def audio(self, max_bytes: int) -> bytes:
+    async def audio(self, max_bytes: int, timeout: float) -> bytes:
+        """Espera al micro hasta que se cierre la petición.
+
+        Con el flujo de las gafas, entre la foto y la primera muestra pasa un
+        rato: suena el «Digue'm» y luego la persona se lo piensa. Por eso hay
+        un tope por trozo y no uno total. Si el micro se queda mudo del todo
+        —se cuelga el firmware, se va el WiFi— hay que soltar la conexión en
+        vez de dejarla abierta para siempre.
+        """
         datos = bytearray(self._buf)
         self._buf.clear()
-        async for trozo in self._trozos:
+        while True:
+            try:
+                trozo = await asyncio.wait_for(
+                    self._trozos.__anext__(), timeout=timeout
+                )
+            except StopAsyncIteration:
+                return bytes(datos)
+            except asyncio.TimeoutError:
+                raise HTTPException(
+                    408,
+                    f"El micro lleva {timeout:g} s sin mandar nada y la petición "
+                    "sigue abierta. Cierra el cuerpo cuando dejes de grabar "
+                    "(el trozo final de longitud 0), o sube "
+                    "ASK_SILENCE_TIMEOUT_SECONDS.",
+                ) from None
             datos.extend(trozo)
             if len(datos) > max_bytes:
                 raise HTTPException(
@@ -525,7 +553,6 @@ class _Trama:
                     f"Audio demasiado largo: el tope son {ASK_MAX_SEGUNDOS:g} s "
                     "(ASK_MAX_AUDIO_SECONDS).",
                 )
-        return bytes(datos)
 
 
 @app.post("/ask", dependencies=[Depends(require_token)])
@@ -578,6 +605,12 @@ async def ask(
             "transcribir, aunque la visión vaya con Gemini.",
         )
 
+    # Se resuelve ya para fallar pronto y para saber si toca reducir la foto.
+    try:
+        proveedor = vision.resolve(provider)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
     t_total = time.perf_counter()
     trama = _Trama(request)
 
@@ -588,8 +621,41 @@ async def ask(
     capture_id, _ruta = await asyncio.to_thread(memory.save_capture, deviceId, foto)
     t_foto = time.perf_counter()
 
-    audio = await trama.audio(int(ASK_MAX_SEGUNDOS * micRate * 2))
+    # Y aquí está el otro premio de tener la foto pronto: reducirla cuesta
+    # ~700 ms de CPU con una de 12 MP, y ahora mismo lo único que hace el
+    # servidor es esperar a que la persona acabe de hablar. Se hace en un hilo
+    # mientras tanto, así que para cuando llegue la pregunta ya está lista y
+    # no suma nada al tiempo que se espera con las gafas puestas.
+    lado = maxSide if maxSide is not None else (
+        imagen.MAX_SIDE if imagen.enabled_for(proveedor) else 0
+    )
+    tarea_imagen = None
+    imagen_b64 = base64.b64encode(foto).decode("ascii")
+    if lado > 0:
+        async def _reduce() -> tuple[str, int]:
+            t = time.perf_counter()
+            reducida, info = await asyncio.to_thread(imagen.reducir, imagen_b64, lado)
+            return reducida, int((time.perf_counter() - t) * 1000) if info.get("resized") else 0
+
+        tarea_imagen = asyncio.create_task(_reduce())
+
+    try:
+        audio = await trama.audio(
+            int(ASK_MAX_SEGUNDOS * micRate * 2), ASK_SILENCIO
+        )
+    except BaseException:
+        if tarea_imagen is not None:
+            tarea_imagen.cancel()
+        raise
     subida_ms = int((time.perf_counter() - t_foto) * 1000)
+
+    resize_ms = espera_img_ms = 0
+    if tarea_imagen is not None:
+        t = time.perf_counter()
+        imagen_b64, resize_ms = await tarea_imagen
+        # Lo que ha sobrado de reducir después de que la persona callara. Con
+        # una frase de un par de segundos es 0: ya estaba hecho.
+        espera_img_ms = int((time.perf_counter() - t) * 1000)
 
     # Los segundos solo se saben si es PCM en crudo; con un m4a o un ogg
     # habría que descodificarlo, así que ahí `segundos` viene a None y lo
@@ -639,12 +705,13 @@ async def ask(
         )
 
     peticion = LookRequest(
-        image=base64.b64encode(foto).decode("ascii"),
+        image=imagen_b64,
         deviceId=deviceId,
         prompt=transcripcion,
         lang=lang,
-        provider=provider,
-        maxSide=maxSide,
+        provider=proveedor,
+        # Ya está reducida (o no tocaba): que _vision_paso no lo repita.
+        maxSide=0,
     )
     # Aquí está la diferencia con /look: se le dan por dichos los dos turnos de
     # la palabra de activación, para que conteste como quien sigue una
@@ -670,6 +737,11 @@ async def ask(
         # Cuánto se ha estado esperando al micro después de tener ya la foto.
         # Es tiempo que la persona pasa hablando, no latencia del servidor.
         "X-Bonsai-Upload-Ms": str(subida_ms),
+        # Reducir la foto se hace mientras se espera al micro, así que
+        # -Resize-Ms es trabajo hecho "gratis" y -Resize-Wait-Ms es lo único
+        # que ha llegado a sumar al total. Normalmente, 0.
+        "X-Bonsai-Resize-Ms": str(resize_ms),
+        "X-Bonsai-Resize-Wait-Ms": str(espera_img_ms),
         "X-Bonsai-Capture-Id": capture_id,
     })
     if segundos is not None:
@@ -683,41 +755,29 @@ async def speak(
     lang: str = tts.DEFAULT_LANG,
     voice: str | None = None,
     tts_provider: str | None = None,
+    audioFormat: str | None = None,
+    sampleRate: int | None = None,
 ):
     """Solo texto a voz. Devuelve el audio en crudo (útil para la ESP32).
 
+    Acepta los mismos `audioFormat` y `sampleRate` que /look, así que sirve
+    para fabricar los clips que las gafas llevan grabados —el «Digue'm» que
+    suena mientras sube la foto, por ejemplo— en el formato exacto del I2S,
+    sin conversiones a mano:
+
+        curl -X POST "$API/speak?text=Digue'm!&audioFormat=pcm16&sampleRate=16000" \
+             -o digam.pcm
+
     Con Piper llega de una vez (~205 ms, no hay nada que trocear). Con edge-tts
     va por trozos, así que se puede empezar a reproducir a los ~1,1 s en vez de
-    esperar el MP3 entero.
-
-    El Content-Type dice el formato: audio/wav con Piper, audio/mpeg con
-    edge-tts.
+    esperar el MP3 entero, y el formato solo puede ser mp3.
     """
-    try:
-        proveedor = tts.effective_provider(tts_provider)
-    except ValueError as e:
-        raise HTTPException(400, str(e)) from e
-
-    trozos = tts.stream(text, tts.voice_for(lang, voice, proveedor), proveedor)
-
-    # Pedimos el primer trozo antes de empezar a responder: si el TTS falla,
-    # aún estamos a tiempo de devolver un error de verdad en vez de un 200 con
-    # el cuerpo vacío.
-    try:
-        primero = await anext(trozos)
-    except StopAsyncIteration:
-        raise HTTPException(502, f"{proveedor} no devolvió audio.") from None
-    except Exception as e:
-        raise HTTPException(
-            502, f"Fallo al generar el audio: {describe_error(e)}"
-        ) from e
-
-    async def cuerpo():
-        yield primero
-        async for trozo in trozos:
-            yield trozo
-
-    return StreamingResponse(cuerpo(), media_type=tts.media_type_for(proveedor))
+    plan = _plan_de_audio(tts_provider, audioFormat, lang, voice, sampleRate)
+    # /speak nació devolviendo WAV con Piper y hay quien lo llama sin decir
+    # formato: se respeta salvo que se pida otra cosa.
+    if audioFormat is None and plan["formato"] == "pcm16":
+        plan["formato"] = "wav"
+    return await _responde_con_voz(text, plan, {})
 
 
 @app.post("/memory", dependencies=[Depends(require_token)])

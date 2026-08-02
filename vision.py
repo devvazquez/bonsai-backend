@@ -146,13 +146,19 @@ def api_key_for(provider: str) -> str:
     return _modulo(resolve(provider)).api_key()
 
 
-# Turnos de conversación que van delante de la pregunta y la imagen. Es la
-# palabra de activación de las gafas: se le da ya dicha y contestada para que
-# el modelo entienda que está a mitad de una conversación hablada y responda
-# como quien continúa, no como quien recibe una orden suelta.
+# Turnos de conversación que van delante de la pregunta y la imagen.
+#
+# No son inventados: es lo que ha pasado de verdad justo antes. La persona ha
+# dicho la palabra de activación y las gafas le han contestado con un clip ya
+# grabado mientras subía la foto. Dándoselos por dichos, el modelo responde
+# como quien continúa una conversación y no como quien recibe una orden.
+#
+# Van en variables de entorno porque tienen que coincidir con lo que hace el
+# firmware: si cambias el clip que suena en las gafas, cambia también esto o
+# le estarás contando al modelo una conversación que no ha ocurrido.
 PREAMBULO_VEU: tuple[tuple[str, str], ...] = (
-    ("user", "Hey Bonsai!"),
-    ("assistant", "Diga’m!"),
+    ("user", os.environ.get("ASK_WAKE_PHRASE", "Hey Bonsai!")),
+    ("assistant", os.environ.get("ASK_WAKE_REPLY", "Diga’m!")),
 )
 
 

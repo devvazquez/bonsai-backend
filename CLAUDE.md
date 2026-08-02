@@ -165,6 +165,24 @@ Antes de la foto y la pregunta se le dan por dichos dos turnos —
 `user: Hey Bonsai!` / `assistant: Diga’m!` (`vision.PREAMBULO_VEU`)— para que
 conteste como quien sigue una conversación. `/look` no los lleva.
 
+**No son inventados: es lo que pasa de verdad.** El firmware detecta "Hey
+Bonsai", hace la foto y, mientras sube, suena por el altavoz un clip grabado
+que dice "Diga'm". Por eso van en `ASK_WAKE_PHRASE`/`ASK_WAKE_REPLY`: si se
+cambia el clip de las gafas hay que cambiarlas o le estaremos contando al
+modelo una conversación que no ha ocurrido. El clip se genera con el propio
+backend (`/speak?text=...&audioFormat=pcm16&sampleRate=16000`) para que sea la
+misma voz que las respuestas.
+
+Ese flujo deja al servidor esperando con la foto en la mano mientras suena el
+clip y la persona habla, así que **la foto se reduce en ese hueco**, en un hilo
+aparte. Con una de 12 MP son 703 ms que dejan de estar en el camino crítico.
+`X-Bonsai-Resize-Wait-Ms` dice lo que se ha llegado a esperar de verdad:
+normalmente 0.
+
+El hueco entre la foto y la primera muestra también obliga a un timeout **por
+trozo** y no total (`ASK_SILENCE_TIMEOUT_SECONDS`, 15 s): si el micro enmudece
+del todo hay que soltar la conexión con un 408 en vez de dejarla abierta.
+
 Para probarlo sin gastar nada: `python test_ask.py`. Sustituye el cliente HTTP
 por uno de mentira y comprueba el payload de verdad (los dos turnos, la
 cabecera WAV, el modelo). Ojo: `stt.py` y `groq_vision.py` hacen

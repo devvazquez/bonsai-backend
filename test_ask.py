@@ -17,6 +17,7 @@ import os
 import struct
 import sys
 import tempfile
+import time
 
 os.environ.setdefault("GROQ_API_KEY", "clau-de-mentida")
 os.environ["BONSAI_DB_PATH"] = tempfile.mkdtemp(prefix="ask-") + "/bonsai.db"
@@ -130,7 +131,7 @@ async def principal():
               str([m["role"] for m in msgs]))
         check("turno 1: user «Hey Bonsai!»",
               msgs[1] == {"role": "user", "content": "Hey Bonsai!"}, str(msgs[1]))
-        check("turno 2: assistant «Diga’m!»",
+        check("turno 2: assistant «Diga’m!» (lo que suena en las gafas)",
               msgs[2] == {"role": "assistant", "content": "Diga’m!"}, str(msgs[2]))
         check("el preámbulo va ANTES del prompt y la imagen",
               msgs[3]["role"] == "user"
@@ -197,6 +198,19 @@ async def principal():
         check("/look devuelve WAV", r.content[:4] == b"RIFF")
 
         # ---------------------------------------------------------------
+        # 4 bis. /speak sirve para fabricar el clip del "Diga'm"
+        # ---------------------------------------------------------------
+        r = await c.post("/speak?text=Diga%E2%80%99m!&audioFormat=pcm16&sampleRate=16000")
+        check("/speak en pcm16 a 16 kHz", r.status_code == 200
+              and r.headers["x-bonsai-format"] == "pcm16"
+              and r.headers["x-bonsai-rate"] == "16000"
+              and r.content[:4] != b"RIFF",       # crudo, sin cabecera
+              f"{r.status_code} {r.headers.get('x-bonsai-format')}")
+        r = await c.post("/speak?text=hola")
+        check("/speak sin decir formato sigue dando WAV",
+              r.status_code == 200 and r.content[:4] == b"RIFF")
+
+        # ---------------------------------------------------------------
         # 5. Errores
         # ---------------------------------------------------------------
         r = await c.post("/ask", content=trama(FOTO, b"\x00" * 100))
@@ -222,6 +236,39 @@ async def principal():
               "x-bonsai-audio-secs" not in r.headers
               and r.headers["x-bonsai-audio-bytes"] == str(len(M4A)))
 
+        # El flujo de las gafas: la foto sube, suena el "Diga'm" y solo
+        # entonces empieza el micro. Entre medias el cuerpo está en silencio y
+        # la petición no se puede caer por eso.
+        async def con_pausa():
+            yield struct.pack(">I", len(FOTO)) + FOTO
+            await asyncio.sleep(0.8)          # el clip del "Diga'm"
+            yield PCM
+
+        r = await c.post("/ask?deviceId=amb-pausa", content=con_pausa())
+        check("una pausa entre la foto y el micro no rompe nada",
+              r.status_code == 200, r.text[:150])
+        check("y la reducción se hace mientras se espera",
+              r.headers.get("x-bonsai-resize-wait-ms") == "0",
+              r.headers.get("x-bonsai-resize-wait-ms"))
+
+        # Micro mudo del todo: hay que soltar la conexión, no colgarse.
+        import main as _main
+        antes_tope = _main.ASK_SILENCIO
+        _main.ASK_SILENCIO = 0.4
+
+        async def se_queda_mudo():
+            yield struct.pack(">I", len(FOTO)) + FOTO
+            await asyncio.sleep(5)            # el firmware se ha colgado
+            yield PCM
+
+        t = time.perf_counter()
+        r = await c.post("/ask?deviceId=mut", content=se_queda_mudo())
+        tardo = time.perf_counter() - t
+        _main.ASK_SILENCIO = antes_tope
+        check("un micro que enmudece -> 408 y no se cuelga",
+              r.status_code == 408 and tardo < 3,
+              f"{r.status_code} en {tardo:.1f} s")
+
         r = await c.post("/ask?audioFormat=flac", content=trama(FOTO, PCM))
         check("formato inventado -> 400 antes de leer nada",
               r.status_code == 400, r.text[:120])
@@ -241,10 +288,11 @@ async def principal():
         usa(mudo)
         r = await c.post("/ask", content=trama(FOTO, PCM))
         check("no se entiende nada -> 422", r.status_code == 422, r.text[:140])
-        # 6 = la buena, la solapada, el m4a, la de 3 ms, la de 31 s y esta.
-        # Las que fallan antes de tener la foto entera no dejan fila.
+        # 8 = la buena, la solapada, el m4a, la de la pausa, la muda, la de
+        # 3 ms, la de 31 s y esta. Las que fallan antes de tener la foto
+        # entera (trama mal formada, formato inventado) no dejan fila.
         check("aun así se guarda la foto",
-              len(memory.list_captures()) == 6, str(len(memory.list_captures())))
+              len(memory.list_captures()) == 8, str(len(memory.list_captures())))
 
         # 429 de la cuota de whisper
         def sin_cuota(request):

@@ -193,15 +193,58 @@ ESP32-S3 Sense llegit per I2S; digues a quina freqüència amb `micRate`— o un
 fitxer amb capçalera (WAV, OGG, m4a, MP3): es detecta sol.
 
 El cos es pot enviar **en trossos, amb `Transfer-Encoding: chunked` i sense
-`Content-Length`**, que és el que farà el firmware: obre la connexió, escup la
-foto i va enviant les mostres del micròfon a mesura que les llegeix. Comprovat
-amb sockets a pelo: la foto queda desada al servidor **als 10 ms**, tres segons
-abans que la persona acabi de parlar.
+`Content-Length`**, que és el que fa el firmware.
 
-Compte amb què vol dir això: el que se solapa és **la pujada**, no la
-transcripció. Whisper necessita l'àudio sencer, així que no comença fins que es
-tanca la petició. El que t'estalvies és el temps de pujar la foto i les mostres,
-que amb WiFi no és poc.
+#### Com encaixa amb les ulleres
+
+```mermaid
+sequenceDiagram
+    participant P as Persona
+    participant U as Ulleres
+    participant B as Backend
+    P->>U: «Hey Bonsai!»
+    U->>B: obre POST /ask, envia [mida][foto]
+    Note over U: mentre puja, sona<br/>el clip «Diga’m» (0,56 s)
+    Note over B: desa la foto i la<br/>redueix mentre espera
+    P->>U: «De quina marca és?»
+    U->>B: mostres del micròfon, a trossos
+    U->>B: tros de longitud 0 (silenci detectat)
+    B->>B: Whisper -> Qwen -> Piper
+    B-->>U: àudio PCM16 en streaming
+    U->>P: la resposta, per l'I2S
+```
+
+Aquest encavalcament és el que fa que sembli ràpid, i el backend hi juga:
+
+- **La foto es desa als 10 ms**, no al final. Comprovat amb sockets a pelo
+  (`test_chunked.py`), tres segons abans que la persona acabi de parlar.
+- **La foto es redueix mentre s'espera el micròfon**, en un fil a part. Amb una
+  de 12 MP són 703 ms de CPU que abans anaven al camí crític i ara ja estan
+  fets quan arriba la pregunta. Ho pots veure a `X-Bonsai-Resize-Wait-Ms`: és
+  el que ha calgut esperar-la de debò, i normalment és 0.
+- **La pausa entre la foto i la primera mostra no molesta.** Hi caben el clip
+  del «Diga’m» i el que la persona trigui a arrancar. El límit és
+  `ASK_SILENCE_TIMEOUT_SECONDS` (15 s per defecte) i és **per tros**, no total:
+  si el micròfon emmudeix del tot, `408` i es tanca la connexió en comptes de
+  quedar-se penjada.
+
+Compte amb què **no** se solapa: la transcripció. Whisper necessita l'àudio
+sencer, o sigui que no comença fins que tanques el cos. El que t'estalvies és
+pujar la foto i les mostres, que amb WiFi no és poc.
+
+#### El clip del «Diga’m»
+
+Que surti de la mateixa veu que les respostes: el genera el propi backend.
+
+```bash
+curl -X POST "$API/speak?text=Diga%E2%80%99m!&audioFormat=pcm16&sampleRate=16000" \
+     -o digam.pcm      # 17,8 KB, 0,56 s, llest per escriure a l'I2S
+```
+
+I que el text coincideixi amb el que se li diu al model: els dos torns del
+preàmbul es configuren amb `ASK_WAKE_PHRASE` i `ASK_WAKE_REPLY`. Si canvies el
+clip de les ulleres i no les canvies, li estaràs explicant al model una
+conversa que no ha passat.
 
 Els paràmetres van a la query: `deviceId`, `lang`, `provider`, `tts`,
 `audioFormat`, `sampleRate`, `micRate` (per defecte 16000) i `maxSide`.
@@ -235,6 +278,7 @@ conserven les 100 últimes per dispositiu; les velles es borren amb el fitxer.
 | Codi | Vol dir |
 | --- | --- |
 | `400` | La trama està mal formada, o amb prou feines hi ha àudio |
+| `408` | El micròfon porta 15 s sense enviar res (`ASK_SILENCE_TIMEOUT_SECONDS`) |
 | `413` | Més de 30 s d'àudio (`ASK_MAX_AUDIO_SECONDS`) |
 | `422` | No s'ha entès res. Mira el guany del micròfon, o tira de `/look` |
 | `429` | Quota esgotada, amb `Retry-After` |
@@ -315,6 +359,8 @@ docker compose cp bonsai:/data/bonsai.db ./backup-$(date +%F).db
 | `IMAGE_MAX_SIDE` | `896` | Costat llarg al qual es redueix la foto. `0` ho desactiva |
 | `GROQ_STT_MODEL` | `whisper-large-v3-turbo` | Model de transcripció de `/ask` |
 | `ASK_MAX_AUDIO_SECONDS` | `30` | Topall de gravació de `/ask` |
+| `ASK_SILENCE_TIMEOUT_SECONDS` | `15` | Sense cap tros del micròfon en tant de temps, `408` |
+| `ASK_WAKE_PHRASE` / `ASK_WAKE_REPLY` | `Hey Bonsai!` / `Diga’m!` | Els dos torns donats per dits |
 | `ADMIN_PASSWORD` | buit | Contrasenya de `/admin`. Buida = la ruta ni existeix |
 | `BONSAI_DOMAIN` | — | Domini per a l'HTTPS (perfil `caddy`) |
 | `ALLOWED_ORIGINS` | `*` | Orígens CORS (només rellevant si hi ha una app web) |
