@@ -273,7 +273,16 @@ La resposta és la mateixa que la de `/look` i, a més:
 ```
 X-Bonsai-Transcript: <base64>   X-Bonsai-Stt-Ms: 380
 X-Bonsai-Audio-Secs: 2.10       X-Bonsai-Capture-Id: <uuid>
+X-Bonsai-Upload-Ms: 2400        X-Bonsai-Resize-Wait-Ms: 0
 ```
+
+> **El cos de la resposta també ve trossejat.** Com que va en streaming no hi
+> ha `Content-Length`, així que és `Transfer-Encoding: chunked` i cada tros
+> porta al davant la seva mida en hexadecimal i un `\r\n`. Si l'escrius a
+> l'I2S tal com surt del socket sentiràs un clic a cada tros: has de treure
+> les capçaleres. Amb `HTTPClient` de l'Arduino, `writeToStream()` ho fa sol;
+> si llegeixes del `WiFiClient` a mà, ho has de fer tu. És el parany més fàcil
+> de trepitjar d'aquest endpoint.
 
 Abans de la foto i la pregunta se li donen per dits dos torns de conversa —
 `user: Hey Bonsai!` i `assistant: Diga'm!` — perquè el model contesti com qui

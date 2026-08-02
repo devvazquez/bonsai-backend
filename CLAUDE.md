@@ -206,6 +206,13 @@ vez en cuando, no para que funcionen las gafas.
 MAX98357A, y el texto va en la cabecera `X-Bonsai-Text` (base64, porque las cabeceras son
 ASCII). Con `"tts":"edge"` devuelve MP3; con Piper, `pcm16`, `mulaw` o `wav`.
 
+**La respuesta va con `Transfer-Encoding: chunked`**, no con `Content-Length`:
+es streaming, al empezar no se sabe cuánto audio habrá. O sea que cada trozo
+lleva delante su tamaño en hexadecimal y un `\r\n`. Quien lo lea del socket a
+mano (el ESP32) tiene que quitarlos antes de escribir al I2S o se oye un clic
+por trozo. Comprobado pidiendo /speak con un socket a pelo: el cuerpo empieza
+por `3fda\r\n`, no por las muestras.
+
 Lo importante del streaming: el primer byte de audio sale a los 1.024-1.463 ms (casi todo
 es la visión) y a partir de ahí el audio llega más rápido de lo que se escucha, así que la
 descarga se solapa con la reproducción y **deja de sumar latencia**. Solo hay que ir más
