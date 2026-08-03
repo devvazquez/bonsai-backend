@@ -42,8 +42,11 @@ BASE_URL = "https://huggingface.co/rhasspy/piper-voices/resolve/main"
 
 # Dónde vive cada voz dentro del repositorio de Hugging Face. Hace falta porque
 # la ruta no se deduce del nombre: el idioma va dos veces y la calidad aparte.
+# En catalán solo hay estas tres en el repositorio (comprobado: ni "low" ni
+# "high" de upc_ona, ni una medium de upc_pau; los tres dan 404).
 _RUTAS = {
     "ca_ES-upc_ona-medium": "ca/ca_ES/upc_ona/medium",
+    "ca_ES-upc_ona-x_low": "ca/ca_ES/upc_ona/x_low",
     "ca_ES-upc_pau-x_low": "ca/ca_ES/upc_pau/x_low",
     "es_ES-davefx-medium": "es/es_ES/davefx/medium",
     "en_GB-alba-medium": "en/en_GB/alba/medium",
@@ -70,6 +73,15 @@ def voice_path(voice: str) -> str:
 
 def is_available(voice: str) -> bool:
     return os.path.isfile(voice_path(voice))
+
+
+def catalogo() -> list[str]:
+    """Las voces que sabemos de dónde bajar, estén en disco o no.
+
+    Sirve para poder decirle a quien pide una voz que no está si es que le
+    falta bajarla o es que se ha equivocado escribiéndola.
+    """
+    return sorted(_RUTAS)
 
 
 def local_voices() -> list[str]:

@@ -133,7 +133,7 @@ bonsai> help
 | `POST` | `/speak?text=...&lang=ca` | Només text a veu |
 | `GET`/`POST` | `/memory` | Dispositius i records |
 | `PATCH`/`DELETE` | `/memory/{deviceId}/{id}` | Corregeix o esborra un record |
-| `GET` | `/voices?prefix=ca` | Veus disponibles |
+| `GET` | `/voices?prefix=ca` | Quines veus hi ha i quines es poden baixar |
 | `GET` | `/health` | Estat del servei. Sense autenticació |
 | `GET` | `/admin` | Panell de la base de dades. Amb `ADMIN_PASSWORD` |
 
@@ -147,6 +147,7 @@ bonsai> help
   "lang": "ca",                        // ca | es | en
   "provider": "groq",                  // groq | gemini. Per defecte, VISION_PROVIDER
   "tts": "piper",                      // piper | edge. Per defecte, TTS_PROVIDER
+  "voice": "ca_ES-upc_pau-x_low",      // opcional; les que digui /voices
   "audioFormat": "pcm16",              // pcm16 | mulaw | wav, o mp3 amb edge
   "sampleRate": 16000                  // 8000 | 16000 | 22050
 }
@@ -254,7 +255,7 @@ preàmbul es configuren amb `ASK_WAKE_PHRASE` i `ASK_WAKE_REPLY`. Si canvies el
 clip de les ulleres i no les canvies, li estaràs explicant al model una
 conversa que no ha passat.
 
-Els paràmetres van a la query: `deviceId`, `lang`, `provider`, `tts`,
+Els paràmetres van a la query: `deviceId`, `lang`, `provider`, `tts`, `voice`,
 `audioFormat`, `sampleRate`, `micRate` (per defecte 16000) i `maxSide`.
 
 ```bash
@@ -310,6 +311,41 @@ encara que la visió vagi per Gemini.
 Tots els endpoints excepte `/health` i `/provar` demanen
 `X-API-Token` si `BONSAI_API_TOKEN` està definit. `/admin` no fa servir el
 token: té la seva pròpia contrasenya (`ADMIN_PASSWORD`).
+
+### Triar la veu
+
+Els tres endpoints que parlen —`/look`, `/ask` i `/speak`— accepten `voice`.
+Amb Piper són els noms dels models de
+[rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices); amb
+edge-tts, els de Microsoft (`ca-ES-JoanaNeural`).
+
+`GET /voices?prefix=ca` distingeix tres coses que no són el mateix:
+
+```jsonc
+{
+  "tts": "piper",
+  "voices": ["ca_ES-upc_ona-medium"],     // al disc: funcionen ja
+  "catalog": ["ca_ES-upc_ona-medium",     // les que el servidor sap baixar
+              "ca_ES-upc_ona-x_low",
+              "ca_ES-upc_pau-x_low"],
+  "default": "ca_ES-upc_ona-medium"
+}
+```
+
+Demanar una del catàleg que no estigui baixada dona un **400 que diu la
+comanda exacta** (`python descargar_voces.py <nom>`), i una que no existeix, un
+400 amb la llista. Es comprova abans de la visió, així que una veu mal escrita
+no gasta ni un token.
+
+En català només n'hi ha tres al repositori de Piper (comprovat: ni `low` ni
+`high` d'`upc_ona`, ni una `medium` d'`upc_pau`, totes 404). Mesurades amb la
+mateixa frase:
+
+| Veu | Síntesi | Model | |
+| --- | --- | --- | --- |
+| `ca_ES-upc_ona-medium` | 215 ms (195-265) | 63 MB | la de per defecte |
+| `ca_ES-upc_pau-x_low` | **145 ms** (131-155) | 28 MB | veu masculina, més ràpida però es nota que és x_low |
+| `ca_ES-upc_ona-x_low` | — | 20 MB | la mateixa locutora en x_low |
 
 ---
 

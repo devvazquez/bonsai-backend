@@ -267,6 +267,26 @@ def _plan_de_audio(
         )
 
     voz = tts.voice_for(lang or tts.DEFAULT_LANG, voice, proveedor)
+    # Con Piper la voz es un fichero .onnx en disco, así que se puede
+    # comprobar antes de sintetizar. Sin esto, una voz mal escrita daba un 502
+    # a mitad de la síntesis y había que mirar los logs para entender por qué.
+    # Con edge-tts no se valida: el catálogo es de Microsoft y consultarlo
+    # costaría una petición a la red en cada foto.
+    if proveedor == "piper" and not piper_tts.is_available(voz):
+        if voz in piper_tts.catalogo():
+            raise HTTPException(
+                400,
+                f"La voz {voz!r} existe pero no está bajada. Trae los 63 MB "
+                f"con:  python descargar_voces.py {voz}",
+            )
+        raise HTTPException(
+            400,
+            f"Voz desconocida: {voz!r}. En disco hay: "
+            f"{', '.join(piper_tts.local_voices()) or 'ninguna'}. "
+            f"Se pueden bajar: {', '.join(piper_tts.catalogo())}. "
+            "El listado en vivo está en /voices.",
+        )
+
     if formato == "mp3":
         rate, bits = 24000, 16          # lo que devuelve edge-tts
     else:
@@ -562,6 +582,7 @@ async def ask(
     lang: str | None = None,
     provider: str | None = None,
     tts_provider: str | None = Query(default=None, alias="tts"),
+    voice: str | None = None,
     audioFormat: str | None = None,
     sampleRate: int | None = None,
     micRate: int = 16000,
@@ -589,13 +610,16 @@ async def ask(
     streaming, con el texto en `X-Bonsai-Text`. Además vuelve lo que se entendió
     en `X-Bonsai-Transcript`, para poder ver por qué ha contestado eso.
 
+    La voz se elige con `voice` (los nombres de Piper, p. ej.
+    `ca_ES-upc_pau-x_low`); `/voices` dice cuáles hay.
+
     Sobre la cuota: transcribir **no** gasta los tokens de texto de Groq
     (Whisper se factura por segundos de audio), así que probar `/ask` no te
     deja sin `/look`.
     """
     # Todo lo que se puede validar sin gastar nada se valida antes de que el
     # dispositivo suba medio megabyte para nada.
-    plan = _plan_de_audio(tts_provider, audioFormat, lang, None, sampleRate)
+    plan = _plan_de_audio(tts_provider, audioFormat, lang, voice, sampleRate)
     if micRate <= 0:
         raise HTTPException(400, f"micRate ha de ser positivo, no {micRate}.")
     if not stt.api_key():
@@ -832,35 +856,29 @@ def clear_device(device_id: str) -> dict[str, Any]:
 async def voices(prefix: str = "", tts_provider: str | None = None) -> dict[str, Any]:
     """Lista las voces disponibles, p. ej. /voices?prefix=ca
 
-    Con Piper son los modelos que hay en disco; con edge-tts, el catálogo de
-    Microsoft.
+    Con Piper devuelve tres cosas distintas, que conviene no confundir:
+
+    - `voices`: los modelos que hay en disco. Son las que funcionan ya.
+    - `catalog`: las que además sabemos bajar (`descargar_voces.py`). Pedir una
+      de estas sin haberla bajado da un 400 que dice cómo hacerlo.
+    - `default`: la que se usa si no se pide ninguna.
+
+    Con edge-tts solo hay `voices`: es el catálogo de Microsoft, que ya está
+    todo disponible sin bajar nada.
     """
     try:
         proveedor = tts.effective_provider(tts_provider)
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
-    return {
+
+    salida: dict[str, Any] = {
         "tts": proveedor,
         "voices": await tts.list_available_voices(prefix, proveedor),
+        "default": tts.voice_for(tts.DEFAULT_LANG, None, proveedor),
     }
-
-
-# --------------------------------------------------------------------------
-# Panel de administración de la base de datos, en /admin
-# --------------------------------------------------------------------------
-# Es acceso SQL completo, así que solo se monta si hay ADMIN_PASSWORD. Sin
-# ella la ruta no existe, que es más seguro que existir y estar abierta.
-# Los recuerdos también se pueden tocar por la API con /memory, sin SQL.
-if os.environ.get("ADMIN_PASSWORD"):
-    import panel as _panel
-    from nicegui import ui as _ui
-
-    _panel.construeix("/admin")
-    _ui.run_with(
-        app,
-        mount_path="/admin",
-        # Firma la cookie de sesión del panel. Se deriva del propio password
-        # para no obligar a definir otra variable más.
-        storage_secret=os.environ["ADMIN_PASSWORD"],
-        title="Bonsai · base de dades",
-    )
+    if proveedor == "piper":
+        salida["catalog"] = [
+            v for v in piper_tts.catalogo()
+            if v.lower().startswith(prefix.lower())
+        ]
+    return salida

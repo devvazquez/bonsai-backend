@@ -119,6 +119,14 @@ defecto). 205 ms de mediana frente a los 1.320 ms de edge-tts con texto nuevo, y
 que engañe porque sintetiza de cero cada vez. Una petición completa con foto pasó de
 2.575 ms a 1.170 ms. edge-tts sigue disponible con `TTS_PROVIDER=edge` o `"tts":"edge"`.
 
+**En catalán solo hay tres voces** en rhasspy/piper-voices, comprobado a mano
+contra el repositorio: `upc_ona-medium` (la de por defecto, 63 MB, 215 ms),
+`upc_ona-x_low` (20 MB) y `upc_pau-x_low` (voz masculina, 28 MB, 145 ms). No
+existen `low` ni `high` de ona ni una `medium` de pau: dan 404. Se eligen con
+`voice` en `/look`, `/ask` y `/speak`, y `/voices` dice cuáles hay en disco
+(`voices`) y cuáles se pueden bajar (`catalog`). Una voz que no está en disco
+da un 400 antes de tocar la visión, así que no gasta cuota.
+
 Ojo: **Piper devuelve WAV y edge-tts MP3**. El formato va en `audioFormat`, no lo des por
 hecho. El WAV pesa 247 KB frente a 66 KB de la misma frase en MP3, que importa por BLE.
 

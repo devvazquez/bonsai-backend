@@ -36,7 +36,8 @@ Cada resposta porta els seus `timings` per poder repetir les mesures.
 | Reduir la foto al servidor | 192 ms | Només si arriba més gran de 896 px |
 | Visió, Groq `qwen3.6-27b` | **552 ms** (551-554) | El més ràpid i el més regular |
 | Visió, Gemini `3.1-flash-lite` | 844 ms (649-937) | Més irregular |
-| Veu, Piper `upc_ona` | 205 ms | En local |
+| Veu, Piper `upc_ona` medium | 205-215 ms | En local, la de per defecte |
+| Veu, Piper `upc_pau` x_low | 145 ms (131-155) | Masculina, model de 28 MB |
 | Veu, edge-tts amb text nou | 1.320 ms (949-2.089) | Depèn de Microsoft |
 | Escoltar l'àudio | ~10 s | 1-2 frases. És el tram més llarg de tots |
 
@@ -76,6 +77,26 @@ Tres coses que en surten:
 Compte en llegir aquests números: la pujada va per `localhost`, o sigui zero.
 Per WiFi, els 1.984 KB de la foto sencera hi sumarien segons; els 102 KB de la
 reduïda, dècimes.
+
+### Les tres veus catalanes de Piper
+
+Al repositori de rhasspy/piper-voices només n'hi ha tres, comprovat una a una
+contra el repositori: `low` i `high` d'`upc_ona` i la `medium` d'`upc_pau` no
+existeixen, donen 404.
+
+| Veu | Síntesi (mediana de 5) | Model | Sortida |
+| --- | --- | --- | --- |
+| `ca_ES-upc_ona-medium` | 215 ms (195-265) | 63 MB | 22.050 Hz |
+| `ca_ES-upc_ona-x_low` | — | 20 MB | 16.000 Hz |
+| `ca_ES-upc_pau-x_low` | **145 ms** (131-155) | 28 MB | 16.000 Hz |
+
+Els 70 ms que guanya `upc_pau` no compensen: sobre els ~1.900 ms d'una petició
+sencera de `/ask` és un 4 %, i es nota que és x_low. Es queda `upc_ona` medium.
+On sí que poden servir les x_low és en una màquina amb poca RAM: 20-28 MB de
+model contra 63.
+
+Mesurat amb la mateixa frase i cinc síntesis per veu. Piper no cacheja —
+sintetitza de zero cada vegada— així que aquí no hi ha el problema de l'edge-tts.
 
 ### La pujada en trossos: què se solapa i què no
 
