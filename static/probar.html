@@ -25,10 +25,14 @@
   }
   .mono { font-family: ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
 
-  /* Capçalera igual que la del panell */
+  /* Amb viewport-fit=cover el contingut arriba fins a la vora de la pantalla,
+     i a l'iPhone això vol dir per sota del rellotge. La capçalera es queda
+     enganxada a dalt i s'hi reserva la franja segura. */
   header {
+    position:sticky; top:0; z-index:10;
     display:flex; align-items:center; gap:10px;
     padding:14px 16px; background:var(--surface);
+    padding-top:calc(14px + env(safe-area-inset-top));
     border-bottom:1px solid var(--line);
   }
   header .marca { font-weight:600; font-size:.95rem; }
@@ -186,6 +190,24 @@ const escapa = s => String(s).replace(/[<&]/g, c => ({"<":"&lt;","&":"&amp;"}[c]
 
 $("btn").onclick = () => $("file").click();
 
+/* Quin motor de veu té posat el servidor.
+   Fa falta per decidir el format de l'àudio: Piper pot donar wav però
+   edge-tts només mp3, i si es tria "Per defecte" la pàgina no sap quin dels
+   dos li tocarà. Es pregunta a /health, que no demana token. */
+let motorActiu = "piper";
+
+async function llegeixMotor() {
+  try {
+    const d = await (await fetch(API + "/health")).json();
+    motorActiu = d.tts.active;
+    $("tts").options[0].textContent = `Per defecte (${motorActiu})`;
+  } catch {
+    // Si /health no contesta, es queda amb piper, que és el de per defecte
+    // del projecte. Com a molt es demanarà un format que no toca i el
+    // servidor ho dirà amb un 400 clar.
+  }
+}
+
 // Recorda els ajustos entre fotos: provar des del mòbil és repetir molt.
 for (const id of ["prov", "lang", "tts", "veu", "token", "reduir"]) {
   const el = $(id), desat = localStorage.getItem("bonsai." + id);
@@ -241,7 +263,7 @@ async function carregaVeus() {
   }
 }
 
-carregaVeus();
+llegeixMotor().then(carregaVeus);
 for (const id of ["tts", "lang", "token"]) {
   $(id).addEventListener("change", carregaVeus);
 }
@@ -284,9 +306,12 @@ $("file").onchange = async e => {
       deviceId: "movil",
       image: prep.b64,
       lang: $("lang").value,
-      // wav perquè el navegador el reprodueix tal qual. L'ESP32 demana pcm16.
-      audioFormat: "wav",
     };
+    // El format no el tria qui fa servir la pàgina, el tria la pàgina: aquí
+    // qui ho ha de reproduir és un <audio>. Amb Piper, wav; amb edge-tts no es
+    // demana res, perquè Microsoft només fa mp3 i demanar-li wav és un 400.
+    // (L'ESP32, que no és un navegador, demana pcm16.)
+    if (($("tts").value || motorActiu) !== "edge") cos.audioFormat = "wav";
     if ($("prov").value) cos.provider = $("prov").value;
     if ($("tts").value) cos.tts = $("tts").value;
     if ($("veu").value) cos.voice = $("veu").value;

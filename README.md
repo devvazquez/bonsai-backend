@@ -48,8 +48,10 @@ Les serveix el mateix backend, sense dependències ni CORS, i comparteixen
 aspecte: negre i blau.
 
 **[`/provar`](static/probar.html)** — fes una foto des del mòbil i escolta la
-resposta. Redueix la imatge abans de pujar-la i ensenya el desglossament de
-temps.
+resposta. Redueix la imatge abans de pujar-la, deixa triar proveïdor, motor de
+veu i veu, i ensenya el desglossament de temps. El format de l'àudio no el
+tries: el posa la pàgina segons el motor (wav amb Piper, mp3 amb edge-tts,
+perquè Microsoft no fa res més).
 
 <img src="docs/img/provar.png" width="320" alt="Pàgina /provar en un mòbil: proveïdor, idioma, veu, pregunta opcional i el botó de fer una foto">
 
