@@ -49,11 +49,11 @@ aspecte: negre i blau.
 
 **[`/provar`](static/probar.html)** — fes una foto des del mòbil i escolta la
 resposta. Redueix la imatge abans de pujar-la, deixa triar proveïdor, motor de
-veu i veu, i ensenya el desglossament de temps. El format de l'àudio no el
+veu i idioma, i ensenya el desglossament de temps. El format de l'àudio no el
 tries: el posa la pàgina segons el motor (wav amb Piper, mp3 amb edge-tts,
 perquè Microsoft no fa res més).
 
-<img src="docs/img/provar.png" width="320" alt="Pàgina /provar en un mòbil: proveïdor, idioma, veu, pregunta opcional i el botó de fer una foto">
+<img src="docs/img/provar.png" width="320" alt="Pàgina /provar en un mòbil: proveïdor, idioma, motor de veu, pregunta opcional i el botó de fer una foto">
 
 **`/admin`** — explorar qualsevol taula, crear-ne, afegir columnes, editar
 files i executar SQL a mà. També és per on es toquen els records: la taula
@@ -139,7 +139,6 @@ prefix a cada línia, però la petició de veritat el porta.
 | `GET`/`POST` | `/speak?text=...&lang=ca` | Només text a veu. Amb `GET` es pot posar la URL en un `<audio src="...">` |
 | `GET`/`POST` | `/memory` | Dispositius i records |
 | `PATCH`/`DELETE` | `/memory/{deviceId}/{id}` | Corregeix o esborra un record |
-| `GET` | `/voices?prefix=ca` | Quines veus hi ha i quines es poden baixar |
 | `GET` | `/health` | Estat del servei. Sense autenticació |
 
 Les dues pàgines **no** van versionades, perquè s'obren al navegador i no són
@@ -171,7 +170,6 @@ alguna cosa deixa de funcionar en actualitzar, és això: afegeix-hi `/api/v1`.
   "lang": "ca",                        // ca | es | en
   "provider": "groq",                  // groq | gemini. Per defecte, VISION_PROVIDER
   "tts": "piper",                      // piper | edge. Per defecte, TTS_PROVIDER
-  "voice": "ca_ES-upc_pau-x_low",      // opcional; les que digui /voices
   "audioFormat": "pcm16",              // pcm16 | mulaw | wav, o mp3 amb edge
   "sampleRate": 16000                  // 8000 | 16000 | 22050
 }
@@ -283,7 +281,7 @@ preàmbul es configuren amb `ASK_WAKE_PHRASE` i `ASK_WAKE_REPLY`. Si canvies el
 clip de les ulleres i no les canvies, li estaràs explicant al model una
 conversa que no ha passat.
 
-Els paràmetres van a la query: `deviceId`, `lang`, `provider`, `tts`, `voice`,
+Els paràmetres van a la query: `deviceId`, `lang`, `provider`, `tts`,
 `audioFormat`, `sampleRate`, `micRate` (per defecte 16000) i `maxSide`.
 
 ```bash
@@ -340,32 +338,48 @@ Tots els endpoints excepte `/health` i `/provar` demanen
 `X-API-Token` si `BONSAI_API_TOKEN` està definit. `/admin` no fa servir el
 token: té la seva pròpia contrasenya (`ADMIN_PASSWORD`).
 
-### Triar la veu
+### L'idioma tria la veu
 
-Els tres endpoints que parlen —`/look`, `/ask` i `/speak`— accepten `voice`.
-Amb Piper són els noms dels models de
-[rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices); amb
-edge-tts, els de Microsoft (`ca-ES-JoanaNeural`).
+Els endpoints reben `lang` (`ca` | `es` | `en`) i **no** una veu: quina veu li
+toca a cada idioma es decideix al codi del backend, en un diccionari:
 
-`GET /voices?prefix=ca` distingeix tres coses que no són el mateix:
-
-```jsonc
-{
-  "tts": "piper",
-  "voices": ["ca_ES-upc_ona-medium"],     // al disc: funcionen ja
-  "catalog": ["ca_ES-upc_ona-medium",     // les que el servidor sap baixar
-              "ca_ES-upc_ona-x_low",
-              "ca_ES-upc_pau-x_low"],
-  "default": "ca_ES-upc_ona-medium"
+```python
+# piper_tts.py — la veu de cada idioma. Això és el que es toca.
+VOICES = {
+    "ca": "ca_ES-upc_ona-medium",
+    "es": "es_ES-davefx-medium",
+    "en": "en_GB-alba-medium",
 }
 ```
 
-Demanar una del catàleg que no estigui baixada dona un **400 que diu la
-comanda exacta** (`python descargar_voces.py <nom>`), i una que no existeix, un
-400 amb la llista. Es comprova abans de la visió, així que una veu mal escrita
-no gasta ni un token.
+Per canviar una veu, s'escriu un altre nom de
+[rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices) i prou: **si
+no està al disc, es baixa sola** el primer cop que es demana aquell idioma. La
+ruta de descàrrega es dedueix del nom (`ca_ES-upc_ona-medium` →
+`ca/ca_ES/upc_ona/medium`), o sigui que no hi ha cap segona taula per mantenir.
 
-En català només n'hi ha tres al repositori de Piper (comprovat: ni `low` ni
+Amb edge-tts el mapa equivalent és `tts.VOICES` (`ca-ES-JoanaNeural`...), i allà
+no hi ha res per baixar.
+
+Un idioma que no estigui al diccionari dona un **400 dient quins hi ha**, en
+comptes de contestar en català per sota. `GET /api/v1/health` diu quina veu té
+cada idioma i si ja està baixada:
+
+```jsonc
+"piper": {
+  "voices": {
+    "ca": { "voice": "ca_ES-upc_ona-medium", "downloaded": true },
+    "es": { "voice": "es_ES-davefx-medium",  "downloaded": false }
+  }
+}
+```
+
+La primera petició d'un idioma que encara no està baixat **tarda més**: mesurat,
+13,1 s per als 63 MB del model castellà, i 53 ms la següent. La de l'idioma per
+defecte es baixa en arrencar el servidor, així que això només passa en canviar
+d'idioma.
+
+En català només hi ha tres veus al repositori de Piper (comprovat: ni `low` ni
 `high` d'`upc_ona`, ni una `medium` d'`upc_pau`, totes 404). Mesurades amb la
 mateixa frase:
 

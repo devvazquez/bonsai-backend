@@ -135,13 +135,34 @@ defecto). 205 ms de mediana frente a los 1.320 ms de edge-tts con texto nuevo, y
 que engañe porque sintetiza de cero cada vez. Una petición completa con foto pasó de
 2.575 ms a 1.170 ms. edge-tts sigue disponible con `TTS_PROVIDER=edge` o `"tts":"edge"`.
 
+### La voz no se pide: la decide el idioma
+
+Los endpoints reciben `lang` y la voz sale de un diccionario en el código,
+`piper_tts.VOICES` (y `tts.VOICES` para edge-tts). **No hay parámetro `voice`,
+ni `/voices`, ni `descargar_voces.py`**: se quitaron los tres a la vez porque
+elegir voz por petición no lo usa nadie (el firmware manda un idioma) y obligaba
+a validar en el endpoint algo que ya está decidido en el servidor.
+
+Cambiar la voz de un idioma es escribir otro nombre del repositorio de Piper en
+ese diccionario. **La ruta de descarga se deduce del nombre** (`_ruta_hf`:
+`ca_ES-upc_ona-medium` → `ca/ca_ES/upc_ona/medium`), así que no hay una segunda
+tabla que mantener al lado, que es lo que había antes.
+
+Si la voz no está en disco se baja sola (`piper_tts.ensure_voice`, con un
+candado por voz para que dos peticiones simultáneas no bajen 63 MB dos veces).
+Medido: 13,1 s la primera petición en castellano, 53 ms la siguiente.
+
+Ojo con el orden: **la descarga va antes de leer el `sample_rate` del modelo**.
+Sin el `.onnx.json` no se sabe a qué frecuencia habla la voz, y suponer 22050
+cuando es de 16 kHz (upc_pau-x_low) haría que sonara acelerada.
+
+Un idioma que no esté en el diccionario da un 400 diciendo cuáles hay, en vez de
+contestar en catalán por lo bajo.
+
 **En catalán solo hay tres voces** en rhasspy/piper-voices, comprobado a mano
 contra el repositorio: `upc_ona-medium` (la de por defecto, 63 MB, 215 ms),
 `upc_ona-x_low` (20 MB) y `upc_pau-x_low` (voz masculina, 28 MB, 145 ms). No
-existen `low` ni `high` de ona ni una `medium` de pau: dan 404. Se eligen con
-`voice` en `/look`, `/ask` y `/speak`, y `/voices` dice cuáles hay en disco
-(`voices`) y cuáles se pueden bajar (`catalog`). Una voz que no está en disco
-da un 400 antes de tocar la visión, así que no gasta cuota.
+existen `low` ni `high` de ona ni una `medium` de pau: dan 404.
 
 Ojo: **Piper devuelve WAV y edge-tts MP3**. El formato va en `audioFormat`, no lo des por
 hecho. El WAV pesa 247 KB frente a 66 KB de la misma frase en MP3, que importa por BLE.

@@ -47,7 +47,7 @@ if ($proveedor -eq "groq") {
 if (-not $clave -or $clave -eq $esperado) {
     Write-Host ""
     Write-Host "Falta $nombre en el .env: /api/v1/look dara error 500." -ForegroundColor Yellow
-    Write-Host "El resto (/api/v1/speak, /memory, /voices, /provar) si funcionara:" -ForegroundColor Yellow
+    Write-Host "El resto (/api/v1/speak, /memory, /provar) si funcionara:" -ForegroundColor Yellow
     Write-Host "la voz es Piper y va en local, sin ninguna clave." -ForegroundColor Yellow
 }
 

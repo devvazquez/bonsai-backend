@@ -27,9 +27,20 @@ VOICES_DIR = os.environ.get(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "voices"),
 )
 
-# Voz por defecto para cada idioma. En catalán, upc_ona medium: es la elegida
-# tras escuchar las muestras. upc_pau x_low es más rápida (122 ms) pero a
-# 16 kHz y suena peor.
+# ==========================================================================
+# La voz de cada idioma. ESTO es lo que se toca para cambiar una voz.
+# ==========================================================================
+# Una entrada por idioma y nada más: quien llama a la API pide un idioma
+# (`lang`) y aquí se decide con qué voz se le contesta. Si la voz que se pone
+# no está en disco, se baja sola la primera vez que hace falta.
+#
+# Los nombres son los del repositorio de Piper (rhasspy/piper-voices) y siguen
+# el patrón `<locale>-<locutor>-<calidad>`. Para cambiar de voz basta con
+# escribir otro nombre de ahí: la ruta de descarga se deduce (ver `_ruta_hf`).
+#
+# En catalán solo hay tres voces, comprobado a mano contra el repositorio:
+# upc_ona-medium (la de aquí), upc_ona-x_low y upc_pau-x_low (masculina, más
+# rápida: 145 ms frente a 215, pero a 16 kHz y se nota).
 VOICES = {
     "ca": "ca_ES-upc_ona-medium",
     "es": "es_ES-davefx-medium",
@@ -40,18 +51,6 @@ DEFAULT_LANG = "ca"
 
 BASE_URL = "https://huggingface.co/rhasspy/piper-voices/resolve/main"
 
-# Dónde vive cada voz dentro del repositorio de Hugging Face. Hace falta porque
-# la ruta no se deduce del nombre: el idioma va dos veces y la calidad aparte.
-# En catalán solo hay estas tres en el repositorio (comprobado: ni "low" ni
-# "high" de upc_ona, ni una medium de upc_pau; los tres dan 404).
-_RUTAS = {
-    "ca_ES-upc_ona-medium": "ca/ca_ES/upc_ona/medium",
-    "ca_ES-upc_ona-x_low": "ca/ca_ES/upc_ona/x_low",
-    "ca_ES-upc_pau-x_low": "ca/ca_ES/upc_pau/x_low",
-    "es_ES-davefx-medium": "es/es_ES/davefx/medium",
-    "en_GB-alba-medium": "en/en_GB/alba/medium",
-}
-
 # Cargar el modelo cuesta ~1,2 s, así que se hace una vez y se guarda. La
 # síntesis en sí son ~205 ms.
 _cargadas: dict[str, object] = {}
@@ -61,9 +60,13 @@ class PiperNoDisponible(RuntimeError):
     """Falta el modelo o la librería: hay que caer a otro proveedor."""
 
 
-def voice_for(lang: str | None, voice: str | None = None) -> str:
-    if voice:
-        return voice
+def idiomas() -> list[str]:
+    """Los idiomas que hay definidos arriba."""
+    return sorted(VOICES)
+
+
+def voice_for(lang: str | None) -> str:
+    """La voz del idioma. Un idioma que no esté definido cae al de por defecto."""
     return VOICES.get((lang or DEFAULT_LANG).lower(), VOICES[DEFAULT_LANG])
 
 
@@ -75,16 +78,8 @@ def is_available(voice: str) -> bool:
     return os.path.isfile(voice_path(voice))
 
 
-def catalogo() -> list[str]:
-    """Las voces que sabemos de dónde bajar, estén en disco o no.
-
-    Sirve para poder decirle a quien pide una voz que no está si es que le
-    falta bajarla o es que se ha equivocado escribiéndola.
-    """
-    return sorted(_RUTAS)
-
-
 def local_voices() -> list[str]:
+    """Las que ya están bajadas. Solo para que /health lo pueda decir."""
     if not os.path.isdir(VOICES_DIR):
         return []
     return sorted(
@@ -92,40 +87,76 @@ def local_voices() -> list[str]:
     )
 
 
-async def download_voice(voice: str, timeout: float = 300.0) -> str:
-    """Baja el modelo de Hugging Face si no está ya en disco.
+def _ruta_hf(voice: str) -> str:
+    """Dónde vive la voz dentro del repositorio, deducido de su nombre.
 
-    Son 63 MB para upc_ona medium y se hace una sola vez. Se llama al arrancar,
-    así que quien lleve las gafas no espera nunca por esto.
+    `ca_ES-upc_ona-medium` -> `ca/ca_ES/upc_ona/medium`. El idioma aparece dos
+    veces (suelto y con región) y la calidad va aparte, pero todo sale del
+    propio nombre, así que no hay que mantener una tabla de rutas al lado del
+    mapa de idiomas: cambiar la voz de un idioma es escribir otro nombre.
+
+    El locutor puede llevar guiones (`en_US-libritts_r-medium` no, pero alguno
+    sí), así que se parte por el primer y el último guion, no por todos.
     """
-    ruta = _RUTAS.get(voice)
-    if ruta is None:
+    primero, _, resto = voice.partition("-")
+    locutor, _, calidad = resto.rpartition("-")
+    if not primero or not locutor or not calidad:
         raise PiperNoDisponible(
-            f"No sé de dónde bajar la voz {voice!r}. Déjala a mano en "
-            f"{VOICES_DIR} o añádela a piper_tts._RUTAS."
+            f"El nombre {voice!r} no tiene la forma <locale>-<locutor>-<calidad> "
+            "que usa el repositorio de Piper, así que no sé de dónde bajarlo. "
+            f"Déjalo a mano en {VOICES_DIR}."
         )
+    idioma = primero.split("_")[0]
+    return f"{idioma}/{primero}/{locutor}/{calidad}"
 
-    import vision  # reutiliza el cliente HTTP compartido
 
-    os.makedirs(VOICES_DIR, exist_ok=True)
-    cliente = vision.get_client()
-    for ext in ("onnx", "onnx.json"):
-        destino = os.path.join(VOICES_DIR, f"{voice}.{ext}")
-        if os.path.isfile(destino):
-            continue
-        url = f"{BASE_URL}/{ruta}/{voice}.{ext}"
-        r = await cliente.get(url, timeout=timeout, follow_redirects=True)
-        if r.status_code >= 400:
-            raise PiperNoDisponible(
-                f"No se pudo bajar {url} (HTTP {r.status_code})."
-            )
-        # A un fichero temporal primero: si se corta la descarga, no queda un
-        # .onnx a medias que luego falle al cargar.
-        tmp = destino + ".parcial"
-        with open(tmp, "wb") as f:
-            f.write(r.content)
-        os.replace(tmp, destino)
-    return voice_path(voice)
+# Una descarga por voz: si llegan dos peticiones a la vez del mismo idioma que
+# todavía no está bajado, la segunda espera a la primera en vez de bajar otros
+# 63 MB en paralelo.
+_candados: dict[str, asyncio.Lock] = {}
+
+
+async def ensure_voice(voice: str, timeout: float = 300.0) -> str:
+    """Se asegura de que la voz esté en disco, bajándola si hace falta.
+
+    Son ~63 MB y se hace una sola vez por voz. La de por defecto se baja al
+    arrancar (`tts.warmup`), así que esto solo se nota la primera vez que se
+    pide un idioma nuevo.
+    """
+    if is_available(voice):
+        return voice_path(voice)
+
+    candado = _candados.setdefault(voice, asyncio.Lock())
+    async with candado:
+        # Otra petición puede haberla bajado mientras se esperaba el candado.
+        if is_available(voice):
+            return voice_path(voice)
+
+        ruta = _ruta_hf(voice)
+
+        import vision  # reutiliza el cliente HTTP compartido
+
+        os.makedirs(VOICES_DIR, exist_ok=True)
+        cliente = vision.get_client()
+        for ext in ("onnx", "onnx.json"):
+            destino = os.path.join(VOICES_DIR, f"{voice}.{ext}")
+            if os.path.isfile(destino):
+                continue
+            url = f"{BASE_URL}/{ruta}/{voice}.{ext}"
+            r = await cliente.get(url, timeout=timeout, follow_redirects=True)
+            if r.status_code >= 400:
+                raise PiperNoDisponible(
+                    f"No se pudo bajar {url} (HTTP {r.status_code}). Si la voz "
+                    "está mal escrita, el repositorio devuelve 404: mira el "
+                    "nombre en piper_tts.VOICES."
+                )
+            # A un fichero temporal primero: si se corta la descarga, no queda
+            # un .onnx a medias que luego falle al cargar.
+            tmp = destino + ".parcial"
+            with open(tmp, "wb") as f:
+                f.write(r.content)
+            os.replace(tmp, destino)
+        return voice_path(voice)
 
 
 def _voz_cargada(voice: str):
@@ -134,8 +165,9 @@ def _voz_cargada(voice: str):
 
     ruta = voice_path(voice)
     if not os.path.isfile(ruta):
+        # No debería pasar: se llama después de ensure_voice(), que la baja.
         raise PiperNoDisponible(
-            f"Falta el modelo {ruta}. Bájalo con: python descargar_voces.py"
+            f"Falta el modelo {ruta} y no se ha bajado antes de sintetizar."
         )
     try:
         from piper import PiperVoice
@@ -327,8 +359,7 @@ async def warmup(voice: str | None = None) -> bool:
     """
     v = voice or VOICES[DEFAULT_LANG]
     try:
-        if not is_available(v):
-            await download_voice(v)
+        await ensure_voice(v)
         await asyncio.to_thread(_voz_cargada, v)
         return True
     except Exception:

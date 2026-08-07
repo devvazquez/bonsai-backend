@@ -45,7 +45,7 @@ fi
 if [ -z "$CLAVE" ] || [ "$CLAVE" = "$ESPERADO" ]; then
   echo
   echo "Falta $NOMBRE en el .env: /api/v1/look dará error 500."
-  echo "El resto (/api/v1/speak, /memory, /voices, /provar) sí funcionará:"
+  echo "El resto (/api/v1/speak, /memory, /provar) sí funcionará:"
   echo "la voz es Piper y va en local, sin ninguna clave."
 fi
 

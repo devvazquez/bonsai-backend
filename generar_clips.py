@@ -69,11 +69,9 @@ async def genera(nombre: str, texto: str, voz: str) -> int:
 
 async def main() -> int:
     os.makedirs(DESTINO, exist_ok=True)
-    voz = tts.voice_for("ca", None, "piper")
-
-    if not piper_tts.is_available(voz):
-        print(f"Falta la voz {voz}. Bájala antes con:\n    python descargar_voces.py")
-        return 1
+    voz = tts.voice_for("ca", "piper")
+    # Si el modelo no está en disco se baja solo (~63 MB, una única vez).
+    await piper_tts.ensure_voice(voz)
 
     for nombre, texto in CLIPS.items():
         await genera(nombre, texto, voz)

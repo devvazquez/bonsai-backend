@@ -153,11 +153,6 @@
     <option value="piper">Piper (local, ~205 ms)</option>
     <option value="edge">edge-tts (Microsoft, ~1,3 s)</option>
   </select>
-  <div class="espai"></div>
-  <label for="veu">Veu</label>
-  <select id="veu">
-    <option value="">Per defecte</option>
-  </select>
   <p class="nota" id="notaVeu"></p>
   <div class="check">
     <input type="checkbox" id="reduir" checked>
@@ -197,78 +192,48 @@ $("btn").onclick = () => $("file").click();
    edge-tts només mp3, i si es tria "Per defecte" la pàgina no sap quin dels
    dos li tocarà. Es pregunta a /health, que no demana token. */
 let motorActiu = "piper";
+// Quina veu li toca a cada idioma. El decideix el servidor (piper_tts.VOICES),
+// aquí només s'ensenya: la veu no es pot triar per petició.
+let veusPerIdioma = {};
 
 async function llegeixMotor() {
   try {
     const d = await (await fetch(API + "/health")).json();
     motorActiu = d.tts.active;
     $("tts").options[0].textContent = `Per defecte (${motorActiu})`;
+    veusPerIdioma = (d.tts.piper || {}).voices || {};
   } catch {
     // Si /health no contesta, es queda amb piper, que és el de per defecte
     // del projecte. Com a molt es demanarà un format que no toca i el
     // servidor ho dirà amb un 400 clar.
   }
+  mostraVeu();
+}
+
+// La veu surt de l'idioma, així que aquí només es diu quina serà. Si encara no
+// està baixada es diu també: la primera petició d'aquell idioma tardarà més
+// perquè el servidor es baixa el model (~63 MB) abans de parlar.
+function mostraVeu() {
+  const lang = $("lang").value || "ca";
+  const info = veusPerIdioma[lang];
+  if (!info) {
+    $("notaVeu").textContent = "";
+    return;
+  }
+  $("notaVeu").textContent = info.downloaded
+    ? `Veu: ${info.voice}`
+    : `Veu: ${info.voice} — encara no baixada, la primera petició tardarà més.`;
 }
 
 // Recorda els ajustos entre fotos: provar des del mòbil és repetir molt.
-for (const id of ["prov", "lang", "tts", "veu", "token", "reduir"]) {
+for (const id of ["prov", "lang", "tts", "token", "reduir"]) {
   const el = $(id), desat = localStorage.getItem("bonsai." + id);
   if (desat !== null) el[el.type === "checkbox" ? "checked" : "value"] = desat === "true" ? true : desat === "false" ? false : desat;
   el.onchange = () => localStorage.setItem("bonsai." + id, el.type === "checkbox" ? el.checked : el.value);
 }
 
-/* Omple el desplegable de veus des de /voices.
-
-   Amb Piper hi ha dues llistes que no són el mateix: les que hi ha al disc
-   (funcionen ja) i les que el servidor sap baixar però encara no té. Les
-   segones es mostren desactivades amb el que cal fer, perquè si no sembla que
-   la interfície estigui trencada quan en tries una i torna un 400. */
-async function carregaVeus() {
-  const sel = $("veu"), nota = $("notaVeu");
-  // Del localStorage i no de sel.value: quan es carrega la pàgina el
-  // desplegable encara està buit, així que el bucle que restaura els ajustos
-  // no hi ha pogut deixar res.
-  const triada = localStorage.getItem("bonsai.veu") || "";
-  const cap = {};
-  if ($("token").value.trim()) cap["X-API-Token"] = $("token").value.trim();
-
-  // Filtra per idioma: les veus es diuen pel locale (ca_ES-..., es_ES-...) i
-  // amb l'idioma en castellà no té sentit ensenyar les catalanes.
-  const q = new URLSearchParams({ prefix: $("lang").value || "ca" });
-  if ($("tts").value) q.set("tts_provider", $("tts").value);
-
-  try {
-    const r = await fetch(API + "/voices?" + q, { headers: cap });
-    if (!r.ok) throw new Error("HTTP " + r.status);
-    const d = await r.json();
-
-    sel.innerHTML = `<option value="">Per defecte (${d.default})</option>`;
-    for (const v of d.voices) {
-      if (v !== d.default) sel.add(new Option(v, v));
-    }
-    const perBaixar = (d.catalog || []).filter(v => !d.voices.includes(v));
-    for (const v of perBaixar) {
-      const o = new Option(v + " — cal baixar-la", v);
-      o.disabled = true;
-      sel.add(o);
-    }
-    sel.value = [...sel.options].some(o => o.value === triada && !o.disabled)
-      ? triada : "";
-    nota.textContent = perBaixar.length
-      ? `Motor ${d.tts}. Les desactivades es baixen amb: python descargar_voces.py ${perBaixar[0]}`
-      : `Motor ${d.tts}, ${d.voices.length} ${d.voices.length === 1 ? "veu" : "veus"} a punt.`;
-  } catch (e) {
-    // Sense token no es pot llistar: no és motiu per no deixar fer fotos.
-    sel.innerHTML = '<option value="">Per defecte</option>';
-    nota.textContent = "No s'ha pogut llegir /voices (" + (e.message || e) +
-      "). Es farà servir la veu per defecte.";
-  }
-}
-
-llegeixMotor().then(carregaVeus);
-for (const id of ["tts", "lang", "token"]) {
-  $(id).addEventListener("change", carregaVeus);
-}
+llegeixMotor();
+$("lang").addEventListener("change", mostraVeu);
 
 /* Redueix al mòbil abans de pujar-la. Amb dades mòbils la pujada és la part
    més lenta de totes: una foto de 12 MP són ~3 MB, i a 896 px són ~60 KB. */
@@ -316,7 +281,6 @@ $("file").onchange = async e => {
     if (($("tts").value || motorActiu) !== "edge") cos.audioFormat = "wav";
     if ($("prov").value) cos.provider = $("prov").value;
     if ($("tts").value) cos.tts = $("tts").value;
-    if ($("veu").value) cos.voice = $("veu").value;
     if ($("prompt").value.trim()) cos.prompt = $("prompt").value.trim();
 
     const cap = { "Content-Type": "application/json" };

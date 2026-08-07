@@ -208,13 +208,6 @@ def cmd_forget(args: list[str]) -> None:
         print(f"🗑️  Borrado en {ms(elapsed)}")
 
 
-def cmd_voices(args: list[str]) -> None:
-    prefix = args[0] if args else LANG
-    data, elapsed = call(f"/voices?prefix={prefix}")
-    if data:
-        print(f"🎙️  ({ms(elapsed)}) {', '.join(data.get('voices', []))}")
-
-
 def cmd_health(_: list[str]) -> None:
     data, elapsed = call("/health")
     if not data:
@@ -272,7 +265,6 @@ Comandos:
   remember <texto>             Guarda un recuerdo
   memories                     Lista los recuerdos
   forget <id>                  Borra un recuerdo (vale el prefijo)
-  voices [prefijo]             Lista voces disponibles (p. ej. "voices ca")
   health                       Comprueba que el servidor responde
   config [url|device|lang|token|provider|tts] <v>   Ver o cambiar configuración
   help / exit
@@ -287,7 +279,7 @@ Para comparar proveedores sin reiniciar el servidor:
 
 COMMANDS = {
     "describe": cmd_describe, "speak": cmd_speak, "remember": cmd_remember,
-    "memories": cmd_memories, "forget": cmd_forget, "voices": cmd_voices,
+    "memories": cmd_memories, "forget": cmd_forget,
     "health": cmd_health, "config": cmd_config,
 }
 

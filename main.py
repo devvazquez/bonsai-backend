@@ -34,6 +34,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
+import clips
 import imagen
 import memory
 import piper_tts
@@ -108,8 +109,7 @@ class LookRequest(BaseModel):
     image: str = Field(..., description="Imagen en base64, SIN el prefijo data:")
     deviceId: str
     prompt: str | None = None
-    lang: str | None = None   # 'ca', 'es', 'en'
-    voice: str | None = None  # fuerza una voz concreta
+    lang: str | None = None   # 'ca', 'es', 'en'. La voz la decide el idioma.
     # 'groq' o 'gemini'. Si no se dice nada, el de VISION_PROVIDER (groq).
     provider: str | None = None
     # 'piper' o 'edge'. Si no se dice nada, el de TTS_PROVIDER (piper).
@@ -242,11 +242,10 @@ def health() -> dict[str, Any]:
     }
 
 
-def _plan_de_audio(
+async def _plan_de_audio(
     tts_provider: str | None,
     audio_format: str | None,
     lang: str | None,
-    voice: str | None,
     sample_rate: int | None,
 ) -> dict[str, Any]:
     """Decide y valida con qué se va a hablar, antes de gastar nada.
@@ -254,11 +253,24 @@ def _plan_de_audio(
     Se hace al principio de la petición, antes de la visión y antes de leer el
     audio del micro: si el formato pedido no existe, más vale decirlo enseguida
     que después de haber gastado cuota o de haber subido medio megabyte.
+
+    La voz no se pide: se pide un idioma y la voz sale de `tts.VOICES` /
+    `piper_tts.VOICES`, que es donde se cambian.
     """
     try:
         proveedor = tts.effective_provider(tts_provider)
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
+
+    # Un idioma que no esté definido se dice, no se traduce por lo bajo al
+    # catalán: si alguien pide 'fr' y le contestan en catalán sin avisar,
+    # parece que el servidor esté roto.
+    if lang and lang.lower() not in tts.idiomas():
+        raise HTTPException(
+            400,
+            f"Idioma desconocido: {lang!r}. Hay {', '.join(tts.idiomas())}. "
+            "Se añaden en piper_tts.VOICES (y tts.VOICES para edge-tts).",
+        )
 
     # Con edge-tts el formato no se elige: Microsoft manda MP3 y punto. Con
     # Piper sí, porque las muestras salen del modelo y se convierten aquí.
@@ -286,26 +298,23 @@ def _plan_de_audio(
             f"{', '.join(str(s) for s in piper_tts.SAMPLE_RATES)}",
         )
 
-    voz = tts.voice_for(lang or tts.DEFAULT_LANG, voice, proveedor)
-    # Con Piper la voz es un fichero .onnx en disco, así que se puede
-    # comprobar antes de sintetizar. Sin esto, una voz mal escrita daba un 502
-    # a mitad de la síntesis y había que mirar los logs para entender por qué.
-    # Con edge-tts no se valida: el catálogo es de Microsoft y consultarlo
-    # costaría una petición a la red en cada foto.
-    if proveedor == "piper" and not piper_tts.is_available(voz):
-        if voz in piper_tts.catalogo():
-            raise HTTPException(
-                400,
-                f"La voz {voz!r} existe pero no está bajada. Trae los 63 MB "
-                f"con:  python descargar_voces.py {voz}",
-            )
+    voz = tts.voice_for(lang or tts.DEFAULT_LANG, proveedor)
+
+    # Si la voz de ese idioma no está en disco, se baja aquí (~63 MB, una sola
+    # vez). Va antes de leer el sample_rate del modelo a propósito: sin el
+    # .onnx.json no se sabe a qué frecuencia habla la voz, y suponer 22050
+    # cuando es de 16 kHz haría que sonara acelerada.
+    #
+    # Y va en este punto de la petición porque es antes de gastar cuota de
+    # visión y, en /ask, antes de que el micro suba nada.
+    try:
+        await tts.ensure_voice(voz, proveedor)
+    except Exception as e:
         raise HTTPException(
-            400,
-            f"Voz desconocida: {voz!r}. En disco hay: "
-            f"{', '.join(piper_tts.local_voices()) or 'ninguna'}. "
-            f"Se pueden bajar: {', '.join(piper_tts.catalogo())}. "
-            "El listado en vivo está en /voices.",
-        )
+            502,
+            f"No se ha podido preparar la voz {voz!r} para el idioma "
+            f"{(lang or tts.DEFAULT_LANG)!r}: {describe_error(e)}",
+        ) from e
 
     if formato == "mp3":
         rate, bits = 24000, 16          # lo que devuelve edge-tts
@@ -514,8 +523,8 @@ async def look(req: LookRequest) -> Response:
     cabeceras HTTP son ASCII), y el formato en `X-Bonsai-Rate`, `-Bits` y
     `-Channels`, para no tener que adivinar nada al configurar el I2S.
     """
-    plan = _plan_de_audio(req.tts, req.audioFormat, req.lang, req.voice,
-                          req.sampleRate)
+    plan = await _plan_de_audio(req.tts, req.audioFormat, req.lang,
+                                req.sampleRate)
     texto, cabeceras = await _describir(req)
     return await _responde_con_voz(texto, plan, cabeceras)
 
@@ -631,7 +640,6 @@ async def ask(
     lang: str | None = None,
     provider: str | None = None,
     tts_provider: str | None = Query(default=None, alias="tts"),
-    voice: str | None = None,
     audioFormat: str | None = None,
     sampleRate: int | None = None,
     micRate: int = 16000,
@@ -659,8 +667,8 @@ async def ask(
     streaming, con el texto en `X-Bonsai-Text`. Además vuelve lo que se entendió
     en `X-Bonsai-Transcript`, para poder ver por qué ha contestado eso.
 
-    La voz se elige con `voice` (los nombres de Piper, p. ej.
-    `ca_ES-upc_pau-x_low`); `/voices` dice cuáles hay.
+    La voz no se pide: sale del idioma (`lang`), y qué voz le toca a cada
+    idioma se decide en `piper_tts.VOICES`.
 
     Sobre la cuota: transcribir **no** gasta los tokens de texto de Groq
     (Whisper se factura por segundos de audio), así que probar `/ask` no te
@@ -668,7 +676,7 @@ async def ask(
     """
     # Todo lo que se puede validar sin gastar nada se valida antes de que el
     # dispositivo suba medio megabyte para nada.
-    plan = _plan_de_audio(tts_provider, audioFormat, lang, voice, sampleRate)
+    plan = await _plan_de_audio(tts_provider, audioFormat, lang, sampleRate)
     if micRate <= 0:
         raise HTTPException(400, f"micRate ha de ser positivo, no {micRate}.")
     if not stt.api_key():
@@ -840,14 +848,8 @@ async def speak(
     lang: str = Query(
         default=tts.DEFAULT_LANG, description="Idioma de la voz: ca, es o en."
     ),
-    voice: str | None = Query(
-        default=None,
-        description="Voz concreta. Con Piper, un modelo de los que dice "
-                    "/voices (p. ej. ca_ES-upc_pau-x_low); con edge-tts, un "
-                    "nombre de Microsoft (ca-ES-JoanaNeural).",
-    ),
     # Se llama tts_provider y no tts (que es el alias en /ask) porque así lo
-    # llaman ya /provar y test_bonsai.py, igual que en /voices.
+    # llaman ya /provar y test_bonsai.py.
     tts_provider: str | None = Query(
         default=None,
         description="piper o edge. Si no se dice nada, el de TTS_PROVIDER.",
@@ -905,7 +907,7 @@ async def speak(
     `-Rate`, `-Bits` y `-Channels`, para no tener que adivinar nada al
     configurar el I2S.
     """
-    plan = _plan_de_audio(tts_provider, audioFormat, lang, voice, sampleRate)
+    plan = await _plan_de_audio(tts_provider, audioFormat, lang, sampleRate)
     # /speak nació devolviendo WAV con Piper y hay quien lo llama sin decir
     # formato: se respeta salvo que se pida otra cosa.
     if audioFormat is None and plan["formato"] == "pcm16":
@@ -961,36 +963,60 @@ def clear_device(device_id: str) -> dict[str, Any]:
     return {"ok": True, "deleted": borrados}
 
 
-@api.get("/voices", dependencies=[Depends(require_token)])
-async def voices(prefix: str = "", tts_provider: str | None = None) -> dict[str, Any]:
-    """Lista las voces disponibles, p. ej. /voices?prefix=ca
+# --------------------------------------------------------------------------
+# /clips: the fixed phrases the glasses carry
+# --------------------------------------------------------------------------
+@api.get("/clips", dependencies=[Depends(require_token)])
+def listar_clips(lang: str = tts.DEFAULT_LANG) -> dict[str, Any]:
+    """What each fixed phrase says in that language.
 
-    Con Piper devuelve tres cosas distintas, que conviene no confundir:
-
-    - `voices`: los modelos que hay en disco. Son las que funcionan ya.
-    - `catalog`: las que además sabemos bajar (`descargar_voces.py`). Pedir una
-      de estas sin haberla bajado da un 400 que dice cómo hacerlo.
-    - `default`: la que se usa si no se pide ninguna.
-
-    Con edge-tts solo hay `voices`: es el catálogo de Microsoft, que ya está
-    todo disponible sin bajar nada.
+    The firmware does not need this (it asks /clips/{id} for the audio), but it
+    shows at a glance what the device will say.
     """
-    try:
-        proveedor = tts.effective_provider(tts_provider)
-    except ValueError as e:
-        raise HTTPException(400, str(e)) from e
-
-    salida: dict[str, Any] = {
-        "tts": proveedor,
-        "voices": await tts.list_available_voices(prefix, proveedor),
-        "default": tts.voice_for(tts.DEFAULT_LANG, None, proveedor),
+    if lang.lower() not in tts.idiomas():
+        raise HTTPException(
+            400, f"Idioma desconocido: {lang!r}. Hay {', '.join(tts.idiomas())}."
+        )
+    return {
+        "lang": lang.lower(),
+        "clips": clips.textos_de(lang),
+        # Untranslated clips show up here instead of coming out in another language.
+        "missing": [c for c in clips.ids() if clips.texto(c, lang) is None],
     }
-    if proveedor == "piper":
-        salida["catalog"] = [
-            v for v in piper_tts.catalogo()
-            if v.lower().startswith(prefix.lower())
-        ]
-    return salida
+
+
+@api.get("/clips/{clip_id}", dependencies=[Depends(require_token)],
+         responses=_RESPUESTA_AUDIO, response_class=Response)
+async def clip(
+    clip_id: str,
+    lang: str = tts.DEFAULT_LANG,
+    tts_provider: str | None = None,
+    audioFormat: str | None = None,
+    sampleRate: int | None = None,
+):
+    """One of those phrases as audio, for the device to store on its SD card.
+
+    It is /speak with the text put in by the server: the glasses ask for
+    /clips/start_talking?lang=ca and carry no text of their own.
+    """
+    texto = clips.texto(clip_id, lang)
+    if texto is None:
+        if clip_id not in clips.CLIPS:
+            raise HTTPException(
+                404,
+                f"No hay ningún clip {clip_id!r}. Hay: {', '.join(clips.ids())}.",
+            )
+        raise HTTPException(
+            404,
+            f"El clip {clip_id!r} no está en {lang!r}. Lo hay en: "
+            f"{', '.join(clips.idiomas_de(clip_id))}. Se añade en clips.py.",
+        )
+
+    plan = await _plan_de_audio(tts_provider, audioFormat, lang, sampleRate)
+    # Same as /speak: whoever asks without a format is saving it to a file.
+    if audioFormat is None and plan["formato"] == "pcm16":
+        plan["formato"] = "wav"
+    return await _responde_con_voz(texto, plan, {"X-Bonsai-Clip": clip_id})
 
 
 # --------------------------------------------------------------------------

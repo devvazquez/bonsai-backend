@@ -227,18 +227,43 @@ async def principal():
 
         # Con GET también: un <audio src="..."> del navegador (y el
         # reproductor de /docs) pide siempre por GET, y antes se comía un 405.
-        # Los bytes no se comparan con los del POST: Piper mete ruido aleatorio
-        # en cada síntesis, así que dos generaciones de la misma frase no salen
-        # idénticas. Lo que importa es que responda lo mismo.
+        # No se comparan los bytes con los del POST, ni la longitud: Piper mete
+        # ruido aleatorio en cada síntesis y para un "hola" la misma petición da
+        # entre 16,9 KB y 22,6 KB (medido). Lo que tiene que coincidir es el
+        # formato, no el tamaño.
         g = await c.get("/speak?text=hola")
         check("/speak también responde a GET",
               g.status_code == 200 and g.content[:4] == b"RIFF"
               and g.headers["content-type"] == r.headers["content-type"]
-              and abs(len(g.content) - len(r.content)) < 2000,
+              and g.headers["x-bonsai-rate"] == r.headers["x-bonsai-rate"]
+              and g.headers["x-bonsai-voice"] == r.headers["x-bonsai-voice"]
+              and len(g.content) > 1000,
               f"{g.status_code}, {len(g.content)} bytes")
         rutas = main.app.openapi()["paths"]["/api/v1/speak"]
         check("y los dos métodos salen en /docs", sorted(rutas) == ["get", "post"],
               str(sorted(rutas)))
+
+        # ---------------------------------------------------------------
+        # 4 quater. La voz sale del idioma; no se puede pedir una voz
+        # ---------------------------------------------------------------
+        params = {q["name"] for q in rutas["get"]["parameters"]}
+        check("/speak ya no tiene parámetro voice", "voice" not in params,
+              str(sorted(params)))
+        check("y sí tiene lang", "lang" in params)
+        campos = main.app.openapi()["components"]["schemas"]["LookRequest"]["properties"]
+        check("/look tampoco: lang sí, voice no",
+              "lang" in campos and "voice" not in campos, str(sorted(campos)))
+
+        # Un idioma que no existe se dice, no se contesta en catalán por lo bajo.
+        r = await c.get("/speak?text=hola&lang=fr")
+        check("un idioma desconocido -> 400 con la lista",
+              r.status_code == 400 and "ca" in r.text, r.text[:160])
+
+        # Y el que sí existe usa la voz de piper_tts.VOICES, sin pedirla.
+        r = await c.get("/speak?text=hola&lang=ca")
+        check("la voz del idioma es la del mapa",
+              r.headers.get("x-bonsai-voice") == main.piper_tts.VOICES["ca"],
+              r.headers.get("x-bonsai-voice", "(cap)"))
         check("el esquema dice que la respuesta es audio, no JSON",
               "audio/wav" in rutas["get"]["responses"]["200"]["content"]
               and "application/json" not in rutas["get"]["responses"]["200"]["content"],

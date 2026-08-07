@@ -31,7 +31,9 @@ PROVIDERS = ("piper", "edge")
 FORMATS = {"piper": "wav", "edge": "mp3"}
 MEDIA_TYPES = {"wav": "audio/wav", "mp3": "audio/mpeg"}
 
-# Voz por defecto de edge-tts para cada idioma soportado.
+# La voz de edge-tts para cada idioma. El equivalente de piper_tts.VOICES: se
+# cambia aquí y ya está. Los nombres son los de Microsoft, que no hace falta
+# bajar nada.
 VOICES = {
     "ca": "ca-ES-JoanaNeural",   # catalán (alternativa: ca-ES-EnricNeural)
     "es": "es-ES-ElviraNeural",  # castellano (alternativa: es-ES-AlvaroNeural)
@@ -68,7 +70,12 @@ def piper_status() -> dict[str, object]:
         "ok": _piper_fallo is None,
         "error": _piper_fallo,
         "voicesDir": piper_tts.VOICES_DIR,
-        "localVoices": piper_tts.local_voices(),
+        # Qué voz le toca a cada idioma y si ya está en disco. Las que no lo
+        # estén se bajan solas la primera vez que se pidan.
+        "voices": {
+            lang: {"voice": voz, "downloaded": piper_tts.is_available(voz)}
+            for lang, voz in sorted(piper_tts.VOICES.items())
+        },
     }
 
 
@@ -80,17 +87,27 @@ def media_type_for(provider: str | None = None) -> str:
     return MEDIA_TYPES[format_for(provider)]
 
 
-def voice_for(lang: str | None, voice: str | None = None, provider: str | None = None) -> str:
-    """Elige la voz: explícita > por idioma > por defecto.
+def idiomas() -> list[str]:
+    """Los idiomas que se pueden pedir. Los dos proveedores tienen los mismos."""
+    return sorted(set(VOICES) | set(piper_tts.VOICES))
 
-    Cada proveedor tiene sus nombres de voz ('ca-ES-JoanaNeural' en edge-tts,
-    'ca_ES-upc_ona-medium' en Piper), así que depende de quién sintetice.
+
+def voice_for(lang: str | None, provider: str | None = None) -> str:
+    """La voz del idioma, según quién vaya a sintetizar.
+
+    La voz no se elige por petición: se pide un idioma y cada proveedor tiene
+    la suya definida en su mapa ('ca-ES-JoanaNeural' en edge-tts,
+    'ca_ES-upc_ona-medium' en Piper).
     """
     if effective_provider(provider) == "piper":
-        return piper_tts.voice_for(lang, voice)
-    if voice:
-        return voice
+        return piper_tts.voice_for(lang)
     return VOICES.get((lang or DEFAULT_LANG).lower(), VOICES[DEFAULT_LANG])
+
+
+async def ensure_voice(voice: str, provider: str | None = None) -> None:
+    """Con Piper, baja el modelo si no está. Con edge-tts no hay nada que bajar."""
+    if effective_provider(provider) == "piper":
+        await piper_tts.ensure_voice(voice)
 
 
 async def _edge_stream(text: str, voice: str) -> AsyncIterator[bytes]:
@@ -124,16 +141,6 @@ async def synthesize(text: str, voice: str, provider: str | None = None) -> byte
     return audio
 
 
-async def list_available_voices(prefix: str = "", provider: str | None = None) -> list[str]:
-    """Útil para descubrir voces (p. ej. prefix='ca' o 'es')."""
-    if effective_provider(provider) == "piper":
-        return [v for v in piper_tts.local_voices() if v.lower().startswith(prefix.lower())]
-    voices = await edge_tts.list_voices()
-    return sorted(
-        v["ShortName"] for v in voices if v["Locale"].lower().startswith(prefix.lower())
-    )
-
-
 async def warmup() -> bool:
     """Prepara Piper al arrancar: baja el modelo si falta y lo carga.
 
@@ -146,8 +153,7 @@ async def warmup() -> bool:
 
     voz = piper_tts.VOICES[piper_tts.DEFAULT_LANG]
     try:
-        if not piper_tts.is_available(voz):
-            await piper_tts.download_voice(voz)
+        await piper_tts.ensure_voice(voz)
         import asyncio
 
         await asyncio.to_thread(piper_tts._voz_cargada, voz)
