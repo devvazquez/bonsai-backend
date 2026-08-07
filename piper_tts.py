@@ -240,20 +240,29 @@ def convertir(chunk, formato: str, rate: int | None) -> tuple[bytes, int]:
     return muestras.astype("<i2").tobytes(), destino
 
 
-def cabecera_wav(sample_rate: int, bits: int = 16) -> bytes:
-    """Cabecera WAV de tamaño desconocido, para poder ir enviando sobre la marcha.
+def cabecera_wav(
+    sample_rate: int, bits: int = 16, datos_bytes: int | None = None
+) -> bytes:
+    """Cabecera WAV. Con `datos_bytes`, con las longitudes de verdad.
 
-    Se pone 0xFFFFFFFF en las longitudes porque al empezar a responder todavía
-    no sabemos cuánto audio habrá. Los reproductores en streaming lo aceptan;
-    el ESP32 ni la necesita.
+    Sin `datos_bytes` se ponen 0xFFFFFFFF, que es lo único que se puede hacer
+    si se empieza a responder antes de saber cuánto audio habrá. Al ESP32 le da
+    igual (lee las muestras y punto), pero **un reproductor no**: no puede
+    calcular la duración, así que enseña 0:00 y no suena nada. Un `<audio>` del
+    navegador o el propio /docs se quedan así.
+
+    O sea que si el audio ya está entero en memoria, hay que pasar
+    `datos_bytes`. Es lo que hace `/speak` con `wav`.
     """
     import struct
 
     bloque = bits // 8
+    riff = 0xFFFFFFFF if datos_bytes is None else 36 + datos_bytes
+    datos = 0xFFFFFFFF if datos_bytes is None else datos_bytes
     return (
-        b"RIFF" + struct.pack("<I", 0xFFFFFFFF) + b"WAVEfmt "
+        b"RIFF" + struct.pack("<I", riff) + b"WAVEfmt "
         + struct.pack("<IHHIIHH", 16, 1, 1, sample_rate, sample_rate * bloque, bloque, bits)
-        + b"data" + struct.pack("<I", 0xFFFFFFFF)
+        + b"data" + struct.pack("<I", datos)
     )
 
 

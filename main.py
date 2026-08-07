@@ -31,7 +31,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 import imagen
@@ -328,7 +328,7 @@ _TIPOS_AUDIO = {
 
 async def _responde_con_voz(
     texto: str, plan: dict[str, Any], cabeceras: dict[str, str]
-) -> StreamingResponse:
+) -> Response:
     """Convierte el texto en audio y lo devuelve en streaming.
 
     Es el final común de /look y de /ask: los dos acaban con una frase que hay
@@ -366,9 +366,23 @@ async def _responde_con_voz(
             502, f"Fallo al generar el audio: {describe_error(e)}"
         ) from e
 
+    # El WAV se junta entero antes de responder, y así la cabecera lleva las
+    # longitudes de verdad. Con 0xFFFFFFFF el reproductor no sabe cuánto dura:
+    # enseña 0:00 y no suena (pasaba al probar /speak desde /docs).
+    #
+    # No se pierde nada por no trocearlo: el wav es el formato de navegador
+    # —el I2S se lleva pcm16 o mulaw, que siguen en streaming— y quien lo pide
+    # se espera igualmente a tener el fichero entero para poder reproducirlo.
+    # Con Piper son los ~205 ms de la síntesis.
+    if formato == "wav":
+        datos = primero + b"".join([t async for t in trozos])
+        return Response(
+            piper_tts.cabecera_wav(rate, plan["bits"], len(datos)) + datos,
+            media_type=_TIPOS_AUDIO[formato].format(rate=rate),
+            headers=cabeceras,
+        )
+
     async def cuerpo():
-        if formato == "wav":
-            yield piper_tts.cabecera_wav(rate, plan["bits"])
         yield primero
         async for trozo in trozos:
             yield trozo
@@ -467,7 +481,7 @@ async def _vision_paso(
 
 
 @api.post("/look", dependencies=[Depends(require_token)])
-async def look(req: LookRequest) -> StreamingResponse:
+async def look(req: LookRequest) -> Response:
     """El endpoint principal: foto entra, audio sale, y el audio va en streaming.
 
     Pensado para que la ESP32-S3 lo llame directamente:
@@ -607,7 +621,7 @@ async def ask(
     sampleRate: int | None = None,
     micRate: int = 16000,
     maxSide: int | None = None,
-) -> StreamingResponse:
+) -> Response:
     """Foto + pregunta hablada -> respuesta hablada, en una sola petición.
 
     Es `/look` con voz por delante: en vez de mandar la pregunta escrita, las

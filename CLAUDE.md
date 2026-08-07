@@ -146,6 +146,23 @@ da un 400 antes de tocar la visión, así que no gasta cuota.
 Ojo: **Piper devuelve WAV y edge-tts MP3**. El formato va en `audioFormat`, no lo des por
 hecho. El WAV pesa 247 KB frente a 66 KB de la misma frase en MP3, que importa por BLE.
 
+### El WAV va entero, no troceado, y por un motivo
+
+`piper_tts.cabecera_wav` sin `datos_bytes` pone 0xFFFFFFFF en las longitudes, que es lo
+único que se puede hacer si se responde sobre la marcha. Al ESP32 le da igual, pero **un
+reproductor no puede calcular la duración y enseña 0:00 sin sonar**: se vio probando
+`/speak` desde `/docs`, con un cuerpo de 18 KB de audio de verdad que ningún `<audio>`
+quería tocar.
+
+Así que con `wav` se junta todo antes de responder y la cabecera lleva las longitudes
+reales (y un `Content-Length`). No se pierde streaming donde importa: el I2S se lleva
+`pcm16` o `mulaw`, que siguen troceados, y quien pide `wav` es un navegador, que necesita
+el fichero entero igualmente. Con Piper son los ~205 ms de la síntesis.
+
+Efecto secundario en `/provar`: para `wav`, «primer byte» y «audio completo» pasan a ser
+casi el mismo número. No es que haya empeorado nada, es que antes el primer byte era una
+cabecera que no servía.
+
 ## `/ask`: la foto y la pregunta dicha en voz alta
 
 Mismo camino que `/look` pero con voz por delante. El cuerpo va en crudo,

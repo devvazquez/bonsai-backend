@@ -187,6 +187,10 @@ X-Bonsai-Vision-Ms: 552        X-Bonsai-Resize-Ms: 192
 ```
 
 Des d'un navegador, `"audioFormat": "wav"` (es posa directe a un `<audio>`).
+El `wav` és l'únic que **no** va trossejat: es munta sencer per poder posar les
+longituds de veritat a la capçalera, que és el que necessita un reproductor per
+saber quant dura. Els que van a l'I2S (`pcm16` i `mulaw`) segueixen en
+streaming.
 Des de l'ESP32, `pcm16` a 16 kHz: enters de 16 bits amb signe, little-endian,
 mono — exactament el que vol l'I2S del MAX98357A, sense conversió. Amb
 `"tts": "edge"` el format només pot ser `mp3`.

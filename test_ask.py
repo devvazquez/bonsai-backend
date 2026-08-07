@@ -213,6 +213,18 @@ async def principal():
         check("/speak sin decir formato sigue dando WAV",
               r.status_code == 200 and r.content[:4] == b"RIFF")
 
+        # Las longitudes de la cabecera, que es lo que hacía que /docs (y
+        # cualquier <audio>) enseñara 0:00 y no sonara nada: con 0xFFFFFFFF el
+        # reproductor no puede saber cuánto dura.
+        riff, datos = (struct.unpack("<I", r.content[o:o + 4])[0] for o in (4, 40))
+        check("el WAV lleva las longitudes de verdad, no 0xFFFFFFFF",
+              riff == len(r.content) - 8 and datos == len(r.content) - 44,
+              f"riff={riff} data={datos} fichero={len(r.content)}")
+        check("y va con Content-Length, sin trocear",
+              r.headers.get("content-length") == str(len(r.content))
+              and "transfer-encoding" not in r.headers,
+              str(dict(r.headers)))
+
         # ---------------------------------------------------------------
         # 4 ter. La API está en /api/v1, y solo ahí
         # ---------------------------------------------------------------
