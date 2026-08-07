@@ -6,7 +6,7 @@ tens al davant: per orientar-te, per llegir un cartell o un menú, per saber qu�
 
 ```mermaid
 flowchart LR
-    A["Ulleres<br/>(ESP32-S3 + OV3660)"] -- "POST /look (foto)<br/>POST /ask (foto + veu)" --> C["Aquest backend"]
+    A["Ulleres<br/>(ESP32-S3 + OV3660)"] -- "POST /api/v1/look (foto)<br/>POST /api/v1/ask (foto + veu)" --> C["Aquest backend"]
     C -. "només /ask" .-> W["Whisper turbo<br/>(Groq)"]
     W -. pregunta .-> C
     C -- redueix a 896 px --> D["Qwen (Groq)<br/>o Gemini"]
@@ -92,7 +92,7 @@ cd bonsai-backend
 El primer cop crea el `.env` i s'atura perquè hi posis la `GROQ_API_KEY`. El
 tornes a executar i arrenca amb recàrrega automàtica.
 
-- API: <http://127.0.0.1:8080> · Swagger: `/docs`
+- API: <http://127.0.0.1:8080/api/v1> · Swagger: `/docs`
 - Provar amb una foto: `/provar`
 - Administrar la base de dades: `/admin` (només amb `ADMIN_PASSWORD` definida)
 - `/health` diu quin proveïdor hi ha actiu i si Piper ha carregat bé
@@ -128,7 +128,11 @@ bonsai> help
 
 ## API
 
-| Mètode | Ruta | Descripció |
+**Tot l'API viu sota `/api/v1`**: `POST /api/v1/look`, `POST /api/v1/ask`, etc.
+Les taules i els exemples d'aquí sota escriuen la ruta curta per no repetir el
+prefix a cada línia, però la petició de veritat el porta.
+
+| Mètode | Ruta (afegeix-hi `/api/v1`) | Descripció |
 | --- | --- | --- |
 | `POST` | `/look` | **Endpoint principal**: foto → àudio en cru i en streaming |
 | `POST` | `/ask` | Foto + pregunta dita en veu alta → àudio. Transcriu amb Whisper |
@@ -137,7 +141,25 @@ bonsai> help
 | `PATCH`/`DELETE` | `/memory/{deviceId}/{id}` | Corregeix o esborra un record |
 | `GET` | `/voices?prefix=ca` | Quines veus hi ha i quines es poden baixar |
 | `GET` | `/health` | Estat del servei. Sense autenticació |
-| `GET` | `/admin` | Panell de la base de dades. Amb `ADMIN_PASSWORD` |
+
+Les dues pàgines **no** van versionades, perquè s'obren al navegador i no són
+API: `/provar` (fer una foto des del mòbil) i `/admin` (el panell de la base de
+dades, només amb `ADMIN_PASSWORD`).
+
+### Versions de l'API
+
+El prefix hi és perquè el dia que calgui canviar el cos d'`/ask` o el format
+d'una resposta es pugui muntar `/api/v2` al costat, sense deixar tirades les
+ulleres que encara no tinguin el firmware nou.
+
+**No hi ha rutes sense prefix**: `/look` i `/health` a seques tornen 404. Si
+alguna cosa deixa de funcionar en actualitzar, és això: afegeix-hi `/api/v1`.
+
+`GET /api/v1/health` diu amb quina versió parla el servidor:
+
+```jsonc
+"api": { "version": "v1", "prefix": "/api/v1" }
+```
 
 ### `POST /look`
 
@@ -267,7 +289,7 @@ import struct, sys
 foto = open("foto.jpg", "rb").read()
 sys.stdout.buffer.write(struct.pack(">I", len(foto)) + foto + open("veu.wav", "rb").read())
 EOF
-curl -X POST "http://127.0.0.1:8080/ask?deviceId=proves&audioFormat=wav" \
+curl -X POST "http://127.0.0.1:8080/api/v1/ask?deviceId=proves&audioFormat=wav" \
      --data-binary @cos.bin -D capçaleres.txt -o resposta.wav
 ```
 
@@ -387,7 +409,7 @@ location / {
 
 Amb Caddy no cal fer res: ja passa els WebSockets sol.
 
-Comprova amb `curl http://localhost:8080/health` — mira que `keyConfigured`
+Comprova amb `curl http://localhost:8080/api/v1/health` — mira que `keyConfigured`
 sigui `true` pel teu proveïdor i que `tts.active` coincideixi amb
 `tts.configured` (si no, Piper ha fallat i el motiu és a `tts.piper.error`).
 

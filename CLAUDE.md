@@ -1,5 +1,21 @@
 # Bonsai Backend — notas para Claude
 
+## La API va versionada: `/api/v1`
+
+Las rutas se declaran en un `APIRouter` (`main.api`) y al final de `main.py` se
+monta con `prefix=API_PREFIX`.
+
+**No hay alias sin prefijo**: `/look` y `/health` a secas dan 404. Los hubo un
+rato, por si quedaba algún dispositivo con el firmware viejo, pero no queda
+ninguno y mantener dos caminos a lo mismo solo da pie a que uno se quede atrás.
+
+Las páginas no se versionan: `/provar` y `/admin` se abren en un navegador, no
+son API. Cuelgan de `app` directamente y no del router.
+
+Al añadir un endpoint nuevo, `@api.post(...)` y no `@app.post(...)`, o solo
+existirá en las rutas viejas. Hay una comprobación en `test_ask.py` (bloque
+«4 ter») que verifica el prefijo, el alias y que el esquema no se duplique.
+
 ## Proveedor de visión: hay dos
 
 `vision.py` es la capa común y elige entre `groq_vision.py` (por defecto) y

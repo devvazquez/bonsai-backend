@@ -185,7 +185,9 @@
 const $ = id => document.getElementById(id);
 const sortida = $("sortida");
 // La pàgina la serveix el mateix backend, així que l'API és al mateix origen.
-const API = location.origin;
+// El /api/v1 va aquí i no a cada fetch: el dia que hi hagi una v2 es canvia
+// en un sol lloc.
+const API = location.origin + "/api/v1";
 const escapa = s => String(s).replace(/[<&]/g, c => ({"<":"&lt;","&":"&amp;"}[c]));
 
 $("btn").onclick = () => $("file").click();

@@ -32,6 +32,8 @@ import time
 import httpx
 
 API_URL = os.environ.get("BONSAI_API_URL", "http://127.0.0.1:8080")
+# Prefijo de versión de la API (el mismo API_PREFIX de main.py).
+API_PREFIX = os.environ.get("BONSAI_API_PREFIX", "/api/v1")
 API_TOKEN = os.environ.get("BONSAI_API_TOKEN", "")
 DEVICE_ID = "bench"
 
@@ -179,7 +181,7 @@ def medir_servidor(
     primero_ms, n = None, 0
     try:
         with cliente.stream(
-            "POST", f"{API_URL}/look", json=cuerpo, headers=cabeceras
+            "POST", f"{API_URL}{API_PREFIX}/look", json=cuerpo, headers=cabeceras
         ) as r:
             if r.status_code == 429:
                 r.read()

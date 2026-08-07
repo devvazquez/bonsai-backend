@@ -77,8 +77,11 @@ def trama(foto: bytes, audio: bytes) -> bytes:
 async def principal():
     memory.init_db()
     transporte = httpx.ASGITransport(app=main.app)
+    # El prefijo de versión va en base_url, así que las rutas de abajo siguen
+    # escribiéndose /ask, /look, /speak...
     async with httpx.AsyncClient(transport=transporte,
-                                 base_url="http://test", timeout=60) as c:
+                                 base_url=f"http://test{main.API_PREFIX}",
+                                 timeout=60) as c:
 
         # ---------------------------------------------------------------
         # 1. El camino feliz
@@ -209,6 +212,25 @@ async def principal():
         r = await c.post("/speak?text=hola")
         check("/speak sin decir formato sigue dando WAV",
               r.status_code == 200 and r.content[:4] == b"RIFF")
+
+        # ---------------------------------------------------------------
+        # 4 ter. La API está en /api/v1, y solo ahí
+        # ---------------------------------------------------------------
+        r = await c.get("/health")
+        check("/api/v1/health responde 200", r.status_code == 200, r.text[:120])
+        check("y dice qué versión es", r.json().get("api", {}).get("version") == "v1",
+              str(r.json().get("api")))
+        r = await c.get("http://test/health")     # sin prefijo, a propósito
+        check("/health sin prefijo -> 404", r.status_code == 404, str(r.status_code))
+        r = await c.post("http://test/look", json={
+            "image": base64.b64encode(FOTO).decode(), "deviceId": "ulleres-01",
+        })
+        check("/look sin prefijo -> 404", r.status_code == 404, str(r.status_code))
+        rutas = main.app.openapi()["paths"]
+        check("el esquema solo lleva rutas versionadas",
+              all(p.startswith("/api/v1") for p in rutas
+                  if p not in ("/provar", "/probar")),
+              str(sorted(rutas)))
 
         # ---------------------------------------------------------------
         # 5. Errores

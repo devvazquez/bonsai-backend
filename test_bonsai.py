@@ -32,6 +32,9 @@ if hasattr(sys.stdout, "reconfigure"):
 # Configuración (cámbiala aquí o con el comando "config" en marcha)
 # ---------------------------------------------------------------------------
 API_URL = "http://127.0.0.1:8080"  # en producción: https://bonsai.tudominio.com
+# Prefijo de versión de la API. Se le pone a cada ruta en call(), así que las
+# rutas de aquí abajo siguen escribiéndose /look, /speak, /memory...
+API_PREFIX = "/api/v1"
 DEVICE_ID = "bonsai-01"
 LANG = "ca"  # 'ca' catalán, 'es' castellano, 'en' inglés
 API_TOKEN = ""  # el mismo BONSAI_API_TOKEN del servidor (vacío = sin auth)
@@ -48,7 +51,7 @@ def ms(seconds: float) -> str:
 
 def call(path: str, method: str = "GET", body: dict | None = None, raw: bool = False):
     """Devuelve (respuesta, segundos). respuesta es dict, bytes o None si falla."""
-    url = f"{API_URL}{path}"
+    url = f"{API_URL}{API_PREFIX}{path}"
     data = json.dumps(body).encode() if body is not None else None
     headers = {"Content-Type": "application/json"}
     if API_TOKEN:
@@ -107,7 +110,7 @@ def cmd_describe(args: list[str]) -> None:
     print(f"📤 Enviando ({len(img_bytes)/1024:.1f} KB, codificada en {ms(t_encode)})...")
 
     req = urllib.request.Request(
-        f"{API_URL}/look", data=json.dumps(body).encode(), method="POST",
+        f"{API_URL}{API_PREFIX}/look", data=json.dumps(body).encode(), method="POST",
         headers={"Content-Type": "application/json",
                  **({"X-API-Token": API_TOKEN} if API_TOKEN else {})})
     t0 = time.perf_counter()
@@ -233,7 +236,7 @@ def cmd_config(args: list[str]) -> None:
     global API_URL, DEVICE_ID, LANG, API_TOKEN, PROVIDER, TTS
     if not args:
         shown = (API_TOKEN[:4] + "…") if API_TOKEN else "(sin token)"
-        print(f"API_URL   = {API_URL}\nDEVICE_ID = {DEVICE_ID}\n"
+        print(f"API_URL   = {API_URL}{API_PREFIX}\nDEVICE_ID = {DEVICE_ID}\n"
               f"LANG      = {LANG}\nTOKEN     = {shown}\n"
               f"PROVIDER  = {PROVIDER or '(el del servidor)'}\n"
               f"TTS       = {TTS or '(el del servidor)'}")
@@ -292,7 +295,7 @@ COMMANDS = {
 def main() -> None:
     print("=" * 60)
     print("  Bonsai Backend — terminal de pruebas")
-    print(f"  API: {API_URL} | Device: {DEVICE_ID} | Idioma: {LANG}")
+    print(f"  API: {API_URL}{API_PREFIX} | Device: {DEVICE_ID} | Idioma: {LANG}")
     print("=" * 60)
     print(HELP)
 

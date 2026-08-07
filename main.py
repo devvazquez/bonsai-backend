@@ -15,6 +15,9 @@ El resto es servicio: `/memory` para los recuerdos, `/speak` para texto a voz
 suelto, la página `/provar` para probarlo desde el móvil y el panel `/admin`
 (`panel.py`) para administrar la base de datos. No hay ninguna aplicación web
 en el camino principal.
+
+Todo lo que es API cuelga de `/api/v1` (`/api/v1/look`, `/api/v1/ask`...). Las
+páginas no: `/provar` y `/admin` se abren en el navegador y no tienen versión.
 """
 
 from __future__ import annotations
@@ -26,7 +29,7 @@ import time
 from datetime import datetime
 from typing import Any
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel, Field
@@ -51,6 +54,20 @@ ALLOWED_ORIGINS = [
 ]
 
 app = FastAPI(title="Bonsai Backend", version="2.0.0")
+
+# --------------------------------------------------------------------------
+# Versión de la API
+# --------------------------------------------------------------------------
+# Todo lo que es API cuelga de /api/v1. Así, el día que haga falta cambiar un
+# formato de respuesta o el cuerpo de /ask, se monta /api/v2 al lado y las
+# gafas que hay por ahí siguen funcionando hasta que se les actualice el
+# firmware.
+API_VERSION = "v1"
+API_PREFIX = f"/api/{API_VERSION}"
+
+# Las rutas se declaran aquí y al final del fichero se montan con el prefijo.
+# No hay alias sin prefijo: /look a secas devuelve 404.
+api = APIRouter()
 
 app.add_middleware(
     CORSMiddleware,
@@ -189,12 +206,15 @@ def probar() -> HTMLResponse:
     return _pagina("probar.html")
 
 
-@app.get("/health")
+@api.get("/health")
 def health() -> dict[str, Any]:
     """Sin token: lo usa el healthcheck de Docker."""
     return {
         "ok": True,
         "authRequired": bool(API_TOKEN),
+        # Para que el firmware pueda comprobar contra qué versión habla sin
+        # tener que deducirlo de la URL que ya conoce.
+        "api": {"version": API_VERSION, "prefix": API_PREFIX},
         "defaultProvider": vision.DEFAULT_PROVIDER,
         "providers": {
             p: {
@@ -446,7 +466,7 @@ async def _vision_paso(
     return description, timings, provider
 
 
-@app.post("/look", dependencies=[Depends(require_token)])
+@api.post("/look", dependencies=[Depends(require_token)])
 async def look(req: LookRequest) -> StreamingResponse:
     """El endpoint principal: foto entra, audio sale, y el audio va en streaming.
 
@@ -575,7 +595,7 @@ class _Trama:
                 )
 
 
-@app.post("/ask", dependencies=[Depends(require_token)])
+@api.post("/ask", dependencies=[Depends(require_token)])
 async def ask(
     request: Request,
     deviceId: str = "bonsai-01",
@@ -773,7 +793,7 @@ async def ask(
     return await _responde_con_voz(texto, plan, cabeceras)
 
 
-@app.post("/speak", dependencies=[Depends(require_token)])
+@api.post("/speak", dependencies=[Depends(require_token)])
 async def speak(
     text: str,
     lang: str = tts.DEFAULT_LANG,
@@ -804,13 +824,13 @@ async def speak(
     return await _responde_con_voz(text, plan, {})
 
 
-@app.post("/memory", dependencies=[Depends(require_token)])
+@api.post("/memory", dependencies=[Depends(require_token)])
 def add_memory(req: MemoryRequest) -> dict[str, Any]:
     item = memory.add_memory(req.deviceId, req.fact)
     return {"ok": True, "item": item}
 
 
-@app.get("/memory", dependencies=[Depends(require_token)])
+@api.get("/memory", dependencies=[Depends(require_token)])
 def list_devices() -> dict[str, Any]:
     """Todos los dispositivos con recuerdos, y el estado de la base de datos.
 
@@ -820,12 +840,12 @@ def list_devices() -> dict[str, Any]:
     return {"devices": memory.list_devices(), "stats": memory.stats()}
 
 
-@app.get("/memory/{device_id}", dependencies=[Depends(require_token)])
+@api.get("/memory/{device_id}", dependencies=[Depends(require_token)])
 def get_memories(device_id: str) -> dict[str, Any]:
     return {"deviceId": device_id, "memories": memory.list_memories(device_id)}
 
 
-@app.patch("/memory/{device_id}/{memory_id}", dependencies=[Depends(require_token)])
+@api.patch("/memory/{device_id}/{memory_id}", dependencies=[Depends(require_token)])
 def edit_memory(device_id: str, memory_id: str, req: MemoryEdit) -> dict[str, Any]:
     """Corrige el texto de un recuerdo, sin borrarlo y volverlo a crear."""
     texto = req.fact.strip()
@@ -837,7 +857,7 @@ def edit_memory(device_id: str, memory_id: str, req: MemoryEdit) -> dict[str, An
     return {"ok": True, "item": item}
 
 
-@app.delete("/memory/{device_id}/{memory_id}", dependencies=[Depends(require_token)])
+@api.delete("/memory/{device_id}/{memory_id}", dependencies=[Depends(require_token)])
 def remove_memory(device_id: str, memory_id: str) -> dict[str, Any]:
     deleted = memory.delete_memory(device_id, memory_id)
     if not deleted:
@@ -845,14 +865,14 @@ def remove_memory(device_id: str, memory_id: str) -> dict[str, Any]:
     return {"ok": True}
 
 
-@app.delete("/memory/{device_id}", dependencies=[Depends(require_token)])
+@api.delete("/memory/{device_id}", dependencies=[Depends(require_token)])
 def clear_device(device_id: str) -> dict[str, Any]:
     """Vacía un dispositivo entero. Pide confirm=true para no borrar sin querer."""
     borrados = memory.clear_device(device_id)
     return {"ok": True, "deleted": borrados}
 
 
-@app.get("/voices", dependencies=[Depends(require_token)])
+@api.get("/voices", dependencies=[Depends(require_token)])
 async def voices(prefix: str = "", tts_provider: str | None = None) -> dict[str, Any]:
     """Lista las voces disponibles, p. ej. /voices?prefix=ca
 
@@ -882,3 +902,10 @@ async def voices(prefix: str = "", tts_provider: str | None = None) -> dict[str,
             if v.lower().startswith(prefix.lower())
         ]
     return salida
+
+
+# --------------------------------------------------------------------------
+# Montaje de las rutas
+# --------------------------------------------------------------------------
+# /api/v1/look, /api/v1/ask, /api/v1/health...
+app.include_router(api, prefix=API_PREFIX)

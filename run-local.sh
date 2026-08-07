@@ -44,8 +44,8 @@ else
 fi
 if [ -z "$CLAVE" ] || [ "$CLAVE" = "$ESPERADO" ]; then
   echo
-  echo "Falta $NOMBRE en el .env: /look dará error 500."
-  echo "El resto (/speak, /memory, /voices, /provar) sí funcionará:"
+  echo "Falta $NOMBRE en el .env: /api/v1/look dará error 500."
+  echo "El resto (/api/v1/speak, /memory, /voices, /provar) sí funcionará:"
   echo "la voz es Piper y va en local, sin ninguna clave."
 fi
 
@@ -56,6 +56,7 @@ HOST="${BONSAI_HOST:-127.0.0.1}"
 
 echo
 echo "  Servidor:      http://127.0.0.1:8080"
+echo "  API:           http://127.0.0.1:8080/api/v1"
 echo "  Hacer una foto: http://127.0.0.1:8080/provar"
 echo "  Base de datos: http://127.0.0.1:8080/admin  (solo con ADMIN_PASSWORD)"
 echo "  Documentación: http://127.0.0.1:8080/docs"
