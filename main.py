@@ -795,18 +795,57 @@ async def ask(
 
 @api.post("/speak", dependencies=[Depends(require_token)])
 async def speak(
-    text: str,
-    lang: str = tts.DEFAULT_LANG,
-    voice: str | None = None,
-    tts_provider: str | None = None,
-    audioFormat: str | None = None,
-    sampleRate: int | None = None,
+    text: str = Query(description="El texto que hay que decir en voz alta."),
+    lang: str = Query(
+        default=tts.DEFAULT_LANG, description="Idioma de la voz: ca, es o en."
+    ),
+    voice: str | None = Query(
+        default=None,
+        description="Voz concreta. Con Piper, un modelo de los que dice "
+                    "/voices (p. ej. ca_ES-upc_pau-x_low); con edge-tts, un "
+                    "nombre de Microsoft (ca-ES-JoanaNeural).",
+    ),
+    # Se llama tts_provider y no tts (que es el alias en /ask) porque así lo
+    # llaman ya /provar y test_bonsai.py, igual que en /voices.
+    tts_provider: str | None = Query(
+        default=None,
+        description="piper o edge. Si no se dice nada, el de TTS_PROVIDER.",
+    ),
+    audioFormat: str | None = Query(
+        default=None,
+        # Sin enum a propósito: los formatos válidos dependen del motor, y un
+        # 422 de FastAPI diría bastante menos que el 400 de _plan_de_audio.
+        description="Con Piper (por defecto): pcm16 | mulaw | wav. Con "
+                    "edge-tts solo mp3, que es lo único que devuelve "
+                    "Microsoft. Si no se dice nada, wav.",
+    ),
+    sampleRate: int | None = Query(
+        default=None,
+        description="8000, 16000 o 22050 Hz. Solo con Piper: el mp3 de "
+                    "edge-tts sale siempre a 24000. Por defecto, el del "
+                    "modelo de la voz (22050 en las catalanas).",
+    ),
 ):
     """Solo texto a voz. Devuelve el audio en crudo (útil para la ESP32).
 
-    Acepta los mismos `audioFormat` y `sampleRate` que /look, así que sirve
-    para fabricar los clips que las gafas llevan grabados —el «Digue'm» que
-    suena mientras sube la foto, por ejemplo— en el formato exacto del I2S,
+    Formatos que acepta, que son los mismos de /look y /ask:
+
+    | audioFormat | Motor | Qué sale |
+    | --- | --- | --- |
+    | `pcm16` | Piper | Muestras de 16 bits con signo, sin cabecera: lo que quiere el I2S del MAX98357A |
+    | `mulaw` | Piper | μ-law de 8 bits, la mitad de bytes que pcm16 |
+    | `wav`   | Piper | Lo mismo que pcm16 pero con cabecera RIFF, para navegadores. **Es el de por defecto aquí** |
+    | `mp3`   | edge-tts | Lo único que da Microsoft (`?tts=edge`) |
+
+    Y `sampleRate` es 8000, 16000 o 22050 Hz (con `mp3` no se elige: 24000).
+    Cualquier otro valor da un 400 con la lista, antes de sintetizar nada.
+
+    Ojo con el formato de por defecto: aquí es **wav**, no `pcm16` como en
+    /look. Es de cuando /speak solo servía para escuchar cosas desde el
+    navegador, y se mantiene para no romper a quien lo llama sin decir nada.
+
+    Sirve para fabricar los clips que las gafas llevan grabados —el «Digue'm»
+    que suena mientras sube la foto, por ejemplo— en el formato exacto del I2S,
     sin conversiones a mano:
 
         curl -X POST "$API/speak?text=Digue'm!&audioFormat=pcm16&sampleRate=16000" \
@@ -815,6 +854,10 @@ async def speak(
     Con Piper llega de una vez (~205 ms, no hay nada que trocear). Con edge-tts
     va por trozos, así que se puede empezar a reproducir a los ~1,1 s en vez de
     esperar el MP3 entero, y el formato solo puede ser mp3.
+
+    El formato de verdad de la respuesta va en las cabeceras `X-Bonsai-Format`,
+    `-Rate`, `-Bits` y `-Channels`, para no tener que adivinar nada al
+    configurar el I2S.
     """
     plan = _plan_de_audio(tts_provider, audioFormat, lang, voice, sampleRate)
     # /speak nació devolviendo WAV con Piper y hay quien lo llama sin decir
