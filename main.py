@@ -325,6 +325,19 @@ _TIPOS_AUDIO = {
     "mp3": "audio/mpeg",
 }
 
+# El cuerpo de /look, /ask y /speak es audio, no JSON. Sin decirlo, FastAPI
+# apunta application/json en el esquema y /docs promete algo que no es.
+_RESPUESTA_AUDIO: dict[int | str, dict[str, Any]] = {
+    200: {
+        "description": "El audio en el formato pedido. El texto va en la "
+                       "cabecera X-Bonsai-Text (UTF-8 en base64).",
+        "content": {
+            tipo.split(";")[0]: {"schema": {"type": "string", "format": "binary"}}
+            for tipo in _TIPOS_AUDIO.values()
+        },
+    }
+}
+
 
 async def _responde_con_voz(
     texto: str, plan: dict[str, Any], cabeceras: dict[str, str]
@@ -480,7 +493,8 @@ async def _vision_paso(
     return description, timings, provider
 
 
-@api.post("/look", dependencies=[Depends(require_token)])
+@api.post("/look", dependencies=[Depends(require_token)],
+          responses=_RESPUESTA_AUDIO, response_class=Response)
 async def look(req: LookRequest) -> Response:
     """El endpoint principal: foto entra, audio sale, y el audio va en streaming.
 
@@ -609,7 +623,8 @@ class _Trama:
                 )
 
 
-@api.post("/ask", dependencies=[Depends(require_token)])
+@api.post("/ask", dependencies=[Depends(require_token)],
+          responses=_RESPUESTA_AUDIO, response_class=Response)
 async def ask(
     request: Request,
     deviceId: str = "bonsai-01",
@@ -807,7 +822,19 @@ async def ask(
     return await _responde_con_voz(texto, plan, cabeceras)
 
 
-@api.post("/speak", dependencies=[Depends(require_token)])
+# GET además de POST. No es capricho: un navegador pide el audio con
+# `<audio src="...">`, y eso es siempre un GET. El reproductor de /docs hacía
+# justo eso, se comía un 405 y se quedaba en 0:00 sin sonar, con el cuerpo del
+# POST ya descargado al lado. Y encaja: /speak no cambia nada, todo lo que
+# necesita va en la query y pedirlo dos veces da lo mismo.
+#
+# Van dos decoradores y no un api_route(methods=[...]) porque con los dos
+# métodos en una sola ruta FastAPI genera el mismo operationId para los dos y
+# avisa de que está duplicado.
+@api.get("/speak", dependencies=[Depends(require_token)],
+         responses=_RESPUESTA_AUDIO, response_class=Response)
+@api.post("/speak", dependencies=[Depends(require_token)],
+          responses=_RESPUESTA_AUDIO, response_class=Response)
 async def speak(
     text: str = Query(description="El texto que hay que decir en voz alta."),
     lang: str = Query(
@@ -841,6 +868,11 @@ async def speak(
     ),
 ):
     """Solo texto a voz. Devuelve el audio en crudo (útil para la ESP32).
+
+    Vale igual con GET que con POST: no cambia nada en el servidor y todo lo
+    que necesita va en la query. Con GET se puede poner la URL tal cual en un
+    `<audio src="...">` o en la barra del navegador, que es lo que hace el
+    reproductor de esta misma página.
 
     Formatos que acepta, que son los mismos de /look y /ask:
 

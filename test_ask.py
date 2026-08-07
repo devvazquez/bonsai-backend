@@ -225,6 +225,25 @@ async def principal():
               and "transfer-encoding" not in r.headers,
               str(dict(r.headers)))
 
+        # Con GET también: un <audio src="..."> del navegador (y el
+        # reproductor de /docs) pide siempre por GET, y antes se comía un 405.
+        # Los bytes no se comparan con los del POST: Piper mete ruido aleatorio
+        # en cada síntesis, así que dos generaciones de la misma frase no salen
+        # idénticas. Lo que importa es que responda lo mismo.
+        g = await c.get("/speak?text=hola")
+        check("/speak también responde a GET",
+              g.status_code == 200 and g.content[:4] == b"RIFF"
+              and g.headers["content-type"] == r.headers["content-type"]
+              and abs(len(g.content) - len(r.content)) < 2000,
+              f"{g.status_code}, {len(g.content)} bytes")
+        rutas = main.app.openapi()["paths"]["/api/v1/speak"]
+        check("y los dos métodos salen en /docs", sorted(rutas) == ["get", "post"],
+              str(sorted(rutas)))
+        check("el esquema dice que la respuesta es audio, no JSON",
+              "audio/wav" in rutas["get"]["responses"]["200"]["content"]
+              and "application/json" not in rutas["get"]["responses"]["200"]["content"],
+              str(sorted(rutas["get"]["responses"]["200"]["content"])))
+
         # ---------------------------------------------------------------
         # 4 ter. La API está en /api/v1, y solo ahí
         # ---------------------------------------------------------------

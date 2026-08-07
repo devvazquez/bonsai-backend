@@ -146,6 +146,26 @@ da un 400 antes de tocar la visión, así que no gasta cuota.
 Ojo: **Piper devuelve WAV y edge-tts MP3**. El formato va en `audioFormat`, no lo des por
 hecho. El WAV pesa 247 KB frente a 66 KB de la misma frase en MP3, que importa por BLE.
 
+### `/speak` acepta GET además de POST
+
+Porque un navegador pide el audio con `<audio src="...">`, y eso es **siempre un GET**. El
+reproductor de `/docs` hace justo eso: aunque el POST haya devuelto el audio, monta un
+`<source src="/api/v1/speak?...">` y vuelve a pedirlo. Con POST-only se comía un 405 y se
+quedaba en `0:00` sin sonar, con el audio del POST descargado al lado.
+
+Encaja sin forzar nada: `/speak` no cambia nada en el servidor, todo va en la query y
+pedirlo dos veces da lo mismo. Van **dos decoradores** (`@api.get` y `@api.post`) y no un
+`api_route(methods=[...])`, porque con los dos métodos en una ruta FastAPI genera el mismo
+`operationId` y avisa de que está duplicado.
+
+`/look` y `/ask` siguen siendo POST-only, y ahí no molesta: el cuerpo es la foto.
+
+### El esquema dice que la respuesta es audio, no JSON
+
+Sin `responses=`/`response_class=`, FastAPI apunta `application/json` en el esquema de los
+tres endpoints que hablan, que devuelven audio. `_RESPUESTA_AUDIO` lo arregla y se pasa a
+`/look`, `/ask` y `/speak`.
+
 ### El WAV va entero, no troceado, y por un motivo
 
 `piper_tts.cabecera_wav` sin `datos_bytes` pone 0xFFFFFFFF en las longitudes, que es lo

@@ -136,7 +136,7 @@ prefix a cada línia, però la petició de veritat el porta.
 | --- | --- | --- |
 | `POST` | `/look` | **Endpoint principal**: foto → àudio en cru i en streaming |
 | `POST` | `/ask` | Foto + pregunta dita en veu alta → àudio. Transcriu amb Whisper |
-| `POST` | `/speak?text=...&lang=ca` | Només text a veu |
+| `GET`/`POST` | `/speak?text=...&lang=ca` | Només text a veu. Amb `GET` es pot posar la URL en un `<audio src="...">` |
 | `GET`/`POST` | `/memory` | Dispositius i records |
 | `PATCH`/`DELETE` | `/memory/{deviceId}/{id}` | Corregeix o esborra un record |
 | `GET` | `/voices?prefix=ca` | Quines veus hi ha i quines es poden baixar |
