@@ -453,6 +453,146 @@ async def main_test():
               r.status_code == 429 and r.headers.get("retry-after") == "13",
               f"{r.status_code} {r.headers.get('retry-after')}")
 
+        # ---------------------------------------------------------------
+        # 9. Tools: the device declares them, the model picks, we forward
+        # ---------------------------------------------------------------
+        CHANGE_LANG = {
+            "name": "change_lang",
+            "description": "Change the language the glasses speak.",
+            "parameters": {
+                "type": "object",
+                "properties": {"lang": {"type": "string", "enum": ["ca", "es", "en"]}},
+                "required": ["lang"],
+            },
+        }
+
+        def call_and_talk(request):
+            sent.append(request)
+            # /ask transcribes first, so this has to answer both endpoints.
+            if "audio/transcriptions" in str(request.url):
+                return httpx.Response(200, json={"text": "canvia a castellà"})
+            return httpx.Response(200, json={"choices": [{"message": {
+                "content": "Va, ara parlo en castellà.",
+                "tool_calls": [{"id": "c1", "type": "function", "function": {
+                    "name": "change_lang", "arguments": '{"lang": "es"}'}}],
+            }}]})
+
+        use(call_and_talk)
+        sent.clear()
+        r = await c.post("/look", json={
+            "image": base64.b64encode(PHOTO).decode(), "deviceId": "tools",
+            "lang": "ca", "audioFormat": "wav",
+            "prompt": "canvia l'idioma a castellà",
+            "tools": [CHANGE_LANG],
+        })
+        check("/look with tools returns 200", r.status_code == 200, r.text[:200])
+
+        payload = json.loads(sent[0].content)
+        check("the tools go to Groq in OpenAI shape",
+              payload["tools"] == [{"type": "function", "function": CHANGE_LANG}],
+              str(payload.get("tools"))[:160])
+        check("and with tool_choice auto", payload.get("tool_choice") == "auto")
+        check("the prompt tells it not to go silent",
+              "Never go silent" in payload["messages"][0]["content"])
+
+        called = json.loads(base64.b64decode(r.headers["x-bonsai-tools"]))
+        check("the tool call comes back with parsed args",
+              called == [{"name": "change_lang", "args": {"lang": "es"}}], str(called))
+        check("and the spoken text is the model's, not the fallback",
+              base64.b64decode(r.headers["x-bonsai-text"]).decode()
+              == "Va, ara parlo en castellà.")
+        check("X-Bonsai-Tools is exposed to JS",
+              "X-Bonsai-Tools" in r.headers["access-control-expose-headers"])
+
+        # A tool call with empty content is the usual shape: say something
+        # canned instead of leaving the glasses mute (or returning 502).
+        def call_and_shut_up(request):
+            sent.append(request)
+            return httpx.Response(200, json={"choices": [{"message": {
+                "content": "",
+                "tool_calls": [{"id": "c1", "type": "function", "function": {
+                    "name": "change_lang", "arguments": '{"lang": "en"}'}}],
+            }}]})
+
+        use(call_and_shut_up)
+        r = await c.post("/look", json={
+            "image": base64.b64encode(PHOTO).decode(), "deviceId": "tools",
+            "lang": "ca", "audioFormat": "wav", "tools": [CHANGE_LANG],
+        })
+        check("a mute tool call still speaks, and does not 502",
+              r.status_code == 200
+              and base64.b64decode(r.headers["x-bonsai-text"]).decode() == "Fet.",
+              f"{r.status_code} {r.headers.get('x-bonsai-text')}")
+
+        # Bad arguments drop that one call, they do not fail the request: the
+        # person would rather hear the sentence than get a 502.
+        def broken_args(request):
+            sent.append(request)
+            return httpx.Response(200, json={"choices": [{"message": {
+                "content": "Una paret blanca.",
+                "tool_calls": [{"id": "c1", "type": "function", "function": {
+                    "name": "change_lang", "arguments": "{not json"}}],
+            }}]})
+
+        use(broken_args)
+        r = await c.post("/look", json={
+            "image": base64.b64encode(PHOTO).decode(), "deviceId": "tools",
+            "lang": "ca", "audioFormat": "wav", "tools": [CHANGE_LANG],
+        })
+        check("unparseable args -> the call is dropped, the answer survives",
+              r.status_code == 200 and "x-bonsai-tools" not in r.headers,
+              f"{r.status_code} {r.headers.get('x-bonsai-tools')}")
+
+        # No tools in the request: the payload must be exactly what it always
+        # was, so old firmware is untouched.
+        use(respond)
+        sent.clear()
+        r = await c.post("/look", json={
+            "image": base64.b64encode(PHOTO).decode(), "deviceId": "tools",
+            "lang": "ca", "audioFormat": "wav",
+        })
+        payload = json.loads(sent[0].content)
+        check("without tools nothing new is sent to Groq",
+              "tools" not in payload and "tool_choice" not in payload,
+              str(list(payload)))
+        check("and no X-Bonsai-Tools comes back",
+              "x-bonsai-tools" not in r.headers)
+
+        # The definitions are prompt tokens on every request, and Groq's
+        # ceiling is 8.000/minute: too big is a 400, not a silent truncation.
+        big = [dict(CHANGE_LANG, description="x" * 3000)]
+        r = await c.post("/look", json={
+            "image": base64.b64encode(PHOTO).decode(), "deviceId": "tools",
+            "lang": "ca", "tools": big,
+        })
+        check("tools that are too big -> 400", r.status_code == 400, r.text[:120])
+
+        r = await c.post("/look", json={
+            "image": base64.b64encode(PHOTO).decode(), "deviceId": "tools",
+            "lang": "ca", "tools": [{"description": "no name here"}],
+        })
+        check("a tool with no name -> 400", r.status_code == 400, r.text[:120])
+
+        # /ask has no JSON body, so its tools ride in a header.
+        use(call_and_talk)
+        sent.clear()
+        r = await c.post(
+            "/ask?deviceId=tools", content=frame(PHOTO, PCM),
+            headers={"X-Bonsai-Tools": base64.b64encode(
+                json.dumps([CHANGE_LANG]).encode()).decode()},
+        )
+        check("/ask takes the tools from X-Bonsai-Tools",
+              r.status_code == 200
+              and json.loads(sent[1].content).get("tool_choice") == "auto",
+              r.text[:150])
+        check("and answers with the tool call",
+              json.loads(base64.b64decode(r.headers["x-bonsai-tools"]))[0]["name"]
+              == "change_lang")
+
+        r = await c.post("/ask?deviceId=tools", content=frame(PHOTO, PCM),
+                         headers={"X-Bonsai-Tools": "not base64 json"})
+        check("a broken X-Bonsai-Tools -> 400", r.status_code == 400, r.text[:120])
+
     use(respond)
     await real_socket()
 

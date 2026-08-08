@@ -13,6 +13,7 @@ only invites one of the two paths to rot.
 from __future__ import annotations
 
 import base64
+import json
 import os
 import re
 
@@ -156,6 +157,46 @@ VOICE_PREAMBLE: tuple[tuple[str, str], ...] = (
 )
 
 
+def _as_openai_tools(tools: list[dict]) -> list[dict]:
+    """Wraps the device's tool list in the shape Groq's API expects.
+
+    The ESP32 sends plain `{name, description, parameters}` because that is what
+    it knows about itself; the OpenAI envelope is our problem, not its.
+    """
+    out = []
+    for t in tools:
+        fn = {"name": t["name"]}
+        if t.get("description"):
+            fn["description"] = t["description"]
+        # An empty object and no `parameters` are different things to the API:
+        # omit it entirely for a tool that takes no arguments.
+        if t.get("parameters"):
+            fn["parameters"] = t["parameters"]
+        out.append({"type": "function", "function": fn})
+    return out
+
+
+def _tool_calls(message: dict) -> list[dict]:
+    """Normalizes Groq's tool_calls into `{name, args}`.
+
+    Arguments come as a JSON *string*, so they are parsed here. A malformed one
+    drops only that call: the rest of the answer is still good, and the person
+    would rather hear the sentence than get a 502.
+    """
+    calls = []
+    for tc in message.get("tool_calls") or []:
+        fn = tc.get("function") or {}
+        name = fn.get("name")
+        if not name:
+            continue
+        try:
+            args = json.loads(fn.get("arguments") or "{}")
+        except (json.JSONDecodeError, TypeError):
+            continue
+        calls.append({"name": name, "args": args if isinstance(args, dict) else {}})
+    return calls
+
+
 async def describe_image(
     api_key: str,
     image_base64: str,
@@ -163,12 +204,19 @@ async def describe_image(
     user_prompt: str,
     timeout: float = 30.0,
     preamble: tuple[tuple[str, str], ...] | None = None,
-) -> str:
+    tools: list[dict] | None = None,
+) -> tuple[str, list[dict]]:
     """Describes the image with Groq's vision model.
+
+    Returns (text to say out loud, tool calls the model asked for).
 
     `preamble` are ("user"/"assistant", text) turns inserted between the system
     prompt and the message carrying the image. /ask uses it to take the wake
     word as said (see VOICE_PREAMBLE).
+
+    `tools` are the actions the *device* says it can perform. We never run them:
+    they go to the model and whatever it picks comes straight back to the
+    firmware, which is the only side that knows what they mean.
     """
     # Previous turns, if any, go between the system message and the image. The
     # format here is OpenAI's, so they pass through as they are.
@@ -205,6 +253,12 @@ async def describe_image(
         ],
     }
 
+    # Only added when the device sent tools, so a request without them goes out
+    # byte for byte as it always did.
+    if tools:
+        payload["tools"] = _as_openai_tools(tools)
+        payload["tool_choice"] = "auto"
+
     resp = await get_client().post(
         GROQ_URL,
         json=payload,
@@ -222,9 +276,10 @@ async def describe_image(
         raise RuntimeError(f"Groq error ({resp.status_code}): {resp.text[:300]}")
 
     data = resp.json()
-    raw = (data.get("choices") or [{}])[0].get("message", {}).get("content", "")
+    message = (data.get("choices") or [{}])[0].get("message") or {}
     # Safety net in case the model ignores reasoning_format.
-    return _THINK_RE.sub("", raw).strip()
+    text = _THINK_RE.sub("", message.get("content") or "").strip()
+    return text, _tool_calls(message)
 
 
 async def warmup() -> bool:

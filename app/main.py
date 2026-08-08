@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import os
 import time
 from datetime import datetime
@@ -106,6 +107,11 @@ class LookRequest(BaseModel):
     # Long side to shrink the photo to on the server. 0 disables it; unset
     # means IMAGE_MAX_SIDE decides.
     maxSide: int | None = None
+    # What this device can do, in OpenAI function shape:
+    # {"name": "change_lang", "description": "...", "parameters": {...}}.
+    # The server never runs them (see /audios docs and TOOL_ACK); it forwards
+    # them to the model and returns whatever it picks in X-Bonsai-Tools.
+    tools: list[dict[str, Any]] | None = None
 
 
 class MemoryRequest(BaseModel):
@@ -122,8 +128,39 @@ class MemoryEdit(BaseModel):
 # --------------------------------------------------------------------------
 LANG_NAMES = {"ca": "Catalan", "es": "Spanish", "en": "English"}
 
+# --------------------------------------------------------------------------
+# Tools the device declares
+# --------------------------------------------------------------------------
+# The tool definitions are prompt tokens on every request, and Groq's ceiling is
+# 8.000 tokens/minute. Over this the request is rejected with a 400 rather than
+# silently truncated, which would be a mystery to debug from the firmware.
+TOOLS_MAX_CHARS = int(os.environ.get("TOOLS_MAX_CHARS", "2000"))
 
-def build_system_prompt(lang: str, memory_context: str) -> str:
+# Said out loud when the model triggers a tool but returns no text of its own.
+# Mute glasses are a bad answer, and asking the model again would be a second
+# round trip, which is exactly what this project refuses to pay.
+TOOL_ACK = {"ca": "Fet.", "es": "Hecho.", "en": "Done."}
+
+
+def _clean_tools(tools: list[dict] | None) -> list[dict]:
+    """Validates what the device sent before it reaches the model."""
+    if not tools:
+        return []
+    if len(json.dumps(tools)) > TOOLS_MAX_CHARS:
+        raise HTTPException(
+            400,
+            f"The tool definitions exceed {TOOLS_MAX_CHARS} characters. They "
+            "are sent to the model on every request and Groq's ceiling is 8.000 "
+            "tokens/minute: send only the tools that make sense right now.",
+        )
+    for t in tools:
+        if not isinstance(t, dict) or not isinstance(t.get("name"), str) or not t["name"]:
+            raise HTTPException(400, f"Every tool needs a 'name': {t!r}")
+    return tools
+
+
+def build_system_prompt(lang: str, memory_context: str,
+                        tools: list[dict] | None = None) -> str:
     today = datetime.now().strftime("%A, %d %B %Y")
     lang_name = LANG_NAMES.get(lang, "Catalan")
 
@@ -153,6 +190,16 @@ def build_system_prompt(lang: str, memory_context: str) -> str:
     if memory_context:
         parts.append(
             "Things the person has asked you to remember before:\n" + memory_context
+        )
+    if tools:
+        # Models usually answer with an empty `content` when they call a tool,
+        # which would leave the glasses silent. We ask for a sentence anyway;
+        # TOOL_ACK covers the times it does not comply.
+        parts.append(
+            "You have tools available. When the person asks for something one "
+            "of them does, call it — and answer out loud as well, with a short "
+            "sentence confirming it (for example «Right, I'll speak Spanish "
+            "now»). Never go silent just because you used a tool."
         )
     return "\n\n".join(parts)
 
@@ -369,24 +416,31 @@ async def _describe(
     Returns the text plus headers detailing what produced it, so it can be
     reported without a JSON body (the body is the audio).
     """
-    text, timings = await _vision_step(req, preamble)
-    return text, {
+    text, timings, tool_calls = await _vision_step(req, preamble)
+    headers = {
         "X-Bonsai-Model": vision.MODEL,
         "X-Bonsai-Vision-Ms": str(timings.get("vision_ms", 0)),
         # Shrinking a 12 MP photo is ~200-300 ms that, missing from here, throw
         # off any measurement taken from outside.
         "X-Bonsai-Resize-Ms": str(timings.get("resize_ms", 0)),
     }
+    # Only present when the model actually asked for something, so the firmware
+    # does not have to tell "no tools requested" from "nothing to do".
+    if tool_calls:
+        headers["X-Bonsai-Tools"] = base64.b64encode(
+            json.dumps(tool_calls).encode()).decode("ascii")
+    return text, headers
 
 
 async def _vision_step(
     req: LookRequest, preamble: tuple[tuple[str, str], ...] | None = None
-) -> tuple[str, dict[str, int]]:
+) -> tuple[str, dict[str, int], list[dict]]:
     api_key = vision.api_key()
     if not api_key:
         raise HTTPException(500, "GROQ_API_KEY is not configured on the server.")
 
     lang = (req.lang or tts.DEFAULT_LANG).lower()
+    tools = _clean_tools(req.tools)
     timings: dict[str, int] = {}
 
     t0 = time.perf_counter()
@@ -409,12 +463,13 @@ async def _vision_step(
 
     t0 = time.perf_counter()
     try:
-        description = await vision.describe_image(
+        description, tool_calls = await vision.describe_image(
             api_key=api_key,
             image_base64=image_b64,
-            system_prompt=build_system_prompt(lang, memory_context),
+            system_prompt=build_system_prompt(lang, memory_context, tools),
             user_prompt=req.prompt or "What is in front of me? Tell me in a sentence or two.",
             preamble=preamble,
+            tools=tools,
         )
     except VisionRateLimit as e:
         # 429 and not 502: the server is not broken, we just have to wait. This
@@ -432,9 +487,14 @@ async def _vision_step(
     timings["vision_ms"] = int((time.perf_counter() - t0) * 1000)
 
     if not description:
-        raise HTTPException(502, "The vision model returned an empty answer.")
+        # A tool call with no text is the model's usual shape, not a failure:
+        # say something canned rather than leaving the glasses mute.
+        if tool_calls:
+            description = TOOL_ACK.get(lang, TOOL_ACK[tts.DEFAULT_LANG])
+        else:
+            raise HTTPException(502, "The vision model returned an empty answer.")
 
-    return description, timings
+    return description, timings, tool_calls
 
 
 @api.post("/look", dependencies=[Depends(require_token)],
@@ -457,6 +517,14 @@ async def look(req: LookRequest) -> Response:
     The text goes in the `X-Bonsai-Text` header (UTF-8 in base64, because HTTP
     headers are ASCII), and the format in `X-Bonsai-Rate`, `-Bits` and
     `-Channels`, so nothing has to be guessed when setting up the I2S.
+
+    **Tools.** The device may send a `tools` list saying what it can do, and if
+    the model decides to use one it comes back in `X-Bonsai-Tools` (base64 JSON,
+    `[{"name": "change_lang", "args": {"lang": "es"}}]`). The server neither
+    knows nor runs them: it is a bridge, so the catalogue lives only in the
+    firmware. `change_lang` in particular changes nothing here — there is no
+    per-device language stored — the glasses act on it and send a different
+    `lang` next time.
     """
     plan = await _audio_plan(req.audioFormat, req.lang, req.sampleRate)
     text, headers = await _describe(req)
@@ -483,6 +551,28 @@ ASK_MIN_SECONDS = 0.25
 # person takes to start talking, while still dropping the connection if the
 # firmware hangs mid-recording.
 ASK_SILENCE = float(os.environ.get("ASK_SILENCE_TIMEOUT_SECONDS", "15"))
+
+
+def _tools_from_header(request: Request) -> list[dict] | None:
+    """Reads the device's tools from X-Bonsai-Tools.
+
+    /ask's body is already `[length][photo][audio]`, so there is nowhere to put
+    a JSON field: it rides in a header, base64'd like the X-Bonsai-* that go the
+    other way, because HTTP headers are ASCII.
+    """
+    raw = request.headers.get("X-Bonsai-Tools")
+    if not raw:
+        return None
+    try:
+        tools = json.loads(base64.b64decode(raw))
+    except Exception as e:
+        raise HTTPException(
+            400,
+            f"X-Bonsai-Tools is not base64 of a JSON list: {describe_error(e)}",
+        ) from e
+    if not isinstance(tools, list):
+        raise HTTPException(400, "X-Bonsai-Tools must be a JSON list of tools.")
+    return tools
 
 
 class _Frame:
@@ -602,6 +692,10 @@ async def ask(
     The voice is not requested: it comes from the language (`lang`), and which
     voice each language gets is decided in `tts.VOICES`.
 
+    Tools work like in `/look`, but since the body is already binary they come
+    in the `X-Bonsai-Tools` request header (base64 of the same JSON list), and
+    the model's choices come back in the response header of the same name.
+
     On quota: transcribing does **not** spend Groq's text tokens (Whisper is
     billed per second of audio), so testing `/ask` does not leave you without
     `/look`.
@@ -609,6 +703,7 @@ async def ask(
     # Everything that can be validated for free is validated before the device
     # uploads half a megabyte for nothing.
     plan = await _audio_plan(audioFormat, lang, sampleRate)
+    tools = _clean_tools(_tools_from_header(request))
     if micRate <= 0:
         raise HTTPException(400, f"micRate must be positive, not {micRate}.")
     if not stt.api_key():
@@ -711,6 +806,7 @@ async def ask(
         lang=lang,
         # Already shrunk (or it did not apply): do not let _vision_step redo it.
         maxSide=0,
+        tools=tools,
     )
     # Here is the difference with /look: the two wake-word turns are taken as
     # said, so it answers like someone continuing a conversation instead of

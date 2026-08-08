@@ -315,6 +315,60 @@ cabecera WAV, el modelo). Ojo: `stt.py` hace `from .vision import get_client`,
 así que parchear solo `vision.get_client` no le llega — hay que tocar los dos
 módulos.
 
+## Tools: las declara la ESP32, el backend solo hace de puente
+
+Frases como «Hey Bonsai, canvia l'idioma a espanyol» tienen que disparar una
+acción en el firmware. **El catálogo de acciones vive solo en el firmware**: la
+ESP32 manda en cada petición qué sabe hacer y el backend lo reenvía al modelo.
+Así no hay una tabla de tools duplicada en los dos lados, que era el problema.
+
+- En `/look` va el campo `tools` del cuerpo JSON.
+- En `/ask` el cuerpo ya es `[longitud][foto][audio]`, así que no hay dónde
+  meter un campo: van en la cabecera **`X-Bonsai-Tools`**, en base64 como las
+  `X-Bonsai-*` de vuelta.
+- Lo que el modelo decide vuelve en la cabecera `X-Bonsai-Tools` de la
+  respuesta: `[{"name": "change_lang", "args": {"lang": "es"}}]`.
+
+**El backend no ejecuta ninguna.** `change_lang` no cambia nada aquí: no hay
+idioma guardado por dispositivo, `lang` es un parámetro por petición. Actúan las
+gafas, y mandan otro `lang` la próxima vez. No intentes «arreglarlo» añadiendo
+estado en el servidor.
+
+### Se usa el tool-calling nativo, no un JSON pedido por prompt
+
+Comprobado en la documentación de Groq antes de decidirlo: `qwen/qwen3.6-27b`
+—el modelo que ya se usa— sale en la lista de modelos con soporte de `tools`, y
+la página de visión enseña ejemplos de `image_url` junto con `tools`, sin
+ninguna restricción documentada. Con eso, el protocolo oficial gana: los
+`tool_calls` vienen ya estructurados y no hay que pelearse con vallas de
+Markdown ni texto suelto.
+
+**El riesgo real es otro**: cuando un modelo llama a una tool suele devolver
+`content` vacío, y unas gafas mudas son mala respuesta. Pedirle una segunda
+vuelta rompería lo de una sola llamada, así que va con cinturón y tirantes:
+
+1. El system prompt pide explícitamente que conteste igualmente con una frase.
+2. Si aun así viene vacío, se dice `TOOL_ACK` («Fet.» / «Hecho.» / «Done.»).
+
+Si el `content` y los `tool_calls` vienen los dos vacíos, eso sí es un 502: es
+un fallo del modelo, no este caso.
+
+Detalles que conviene no volver a averiguar:
+
+- **Sin `tools` en la petición, el payload a Groq es idéntico al de siempre**
+  (ni `tools` ni `tool_choice`). Hay un test que lo comprueba, para que el
+  firmware antiguo no note nada.
+- Los `arguments` de Groq llegan como **string JSON**, no como objeto. Si uno no
+  parsea se descarta **esa** llamada y ya: la persona prefiere oír la frase a
+  recibir un 502.
+- Hay un tope de tamaño (`TOOLS_MAX_CHARS`, 2.000). Las definiciones son tokens
+  de prompt en cada petición y el techo de Groq son 8.000/minuto. Pasarse da
+  400, no se trunca por lo bajo.
+
+**Pendiente de comprobar con uso real**: si Qwen respeta lo de contestar además
+de llamar a la tool, o si el camino normal acaba siendo siempre `TOOL_ACK`. Si
+es lo segundo, se puede simplificar quitando esa parte del prompt.
+
 ## Endpoints de imagen: `/look` y `/ask`
 
 Solo hay estos dos. `/describe` se eliminó. Devolvía JSON con el audio en base64 (33 % más de bytes y algo que
