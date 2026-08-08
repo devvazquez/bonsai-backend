@@ -25,7 +25,7 @@ from nicegui import app as nicegui_app, ui
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import RedirectResponse
 
-import memory
+from . import memory
 
 # Contrasenya per entrar-hi. Això és accés SQL complet a la base de dades, així
 # que si no n'hi ha cap de definida el panell no es munta: val més que no hi

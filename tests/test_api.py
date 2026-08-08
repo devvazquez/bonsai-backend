@@ -22,14 +22,11 @@ import time
 os.environ.setdefault("GROQ_API_KEY", "clau-de-mentida")
 os.environ["BONSAI_DB_PATH"] = tempfile.mkdtemp(prefix="ask-") + "/bonsai.db"
 os.environ["BONSAI_CAPTURES_DIR"] = tempfile.mkdtemp(prefix="captures-")
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# La arrel del repositori, per poder importar el paquet `app`.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import httpx
-import memory
-import stt
-import tts
-import vision
-import main
+from app import main, memory, stt, tts, vision
 
 
 def usa(transporte):
@@ -406,9 +403,8 @@ async def principal():
               r.headers.get("x-bonsai-resize-wait-ms"))
 
         # Micro mudo del todo: hay que soltar la conexión, no colgarse.
-        import main as _main
-        antes_tope = _main.ASK_SILENCIO
-        _main.ASK_SILENCIO = 0.4
+        antes_tope = main.ASK_SILENCIO
+        main.ASK_SILENCIO = 0.4
 
         async def se_queda_mudo():
             yield struct.pack(">I", len(FOTO)) + FOTO
@@ -418,7 +414,7 @@ async def principal():
         t = time.perf_counter()
         r = await c.post("/ask?deviceId=mut", content=se_queda_mudo())
         tardo = time.perf_counter() - t
-        _main.ASK_SILENCIO = antes_tope
+        main.ASK_SILENCIO = antes_tope
         check("un micro que enmudece -> 408 y no se cuelga",
               r.status_code == 408 and tardo < 3,
               f"{r.status_code} en {tardo:.1f} s")

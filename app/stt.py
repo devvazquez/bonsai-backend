@@ -25,7 +25,7 @@ import struct
 
 import httpx
 
-from vision import VisionRateLimit, get_client
+from .vision import VisionRateLimit, get_client
 
 GROQ_STT_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 

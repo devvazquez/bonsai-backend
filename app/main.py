@@ -34,13 +34,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
-import clips
-import imagen
-import memory
-import stt
-import tts
-import vision
-from vision import VisionRateLimit, describe_error
+from . import clips, imagen, memory, stt, tts, vision
+from .vision import VisionRateLimit, describe_error
 
 # Token para proteger el endpoint. Al estar expuesto a internet, sin esto
 # cualquiera que descubra la URL podría gastar tu cuota del proveedor de visión.

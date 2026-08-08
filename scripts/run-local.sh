@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # Arranca el backend de Bonsai en local, sin Docker (Linux / macOS).
 #
-#   ./run-local.sh
+#   ./scripts/run-local.sh
 #
 # Crea el entorno virtual la primera vez, instala las dependencias, carga el
 # .env y levanta el servidor en http://127.0.0.1:8080 con recarga automática.
 
 set -euo pipefail
-cd "$(dirname "$0")"
+# A la raíz del repositorio: el .env, el .venv y el paquete `app` viven ahí,
+# no al lado de este script.
+cd "$(dirname "$0")/.."
 
 if [ ! -f .env ]; then
   cp .env.example .env
@@ -61,8 +63,8 @@ if [ "$HOST" = "0.0.0.0" ]; then
 else
   echo "  Desde el móvil: BONSAI_HOST=0.0.0.0 ./run-local.sh"
 fi
-echo "  Para probarlo: python test_bonsai.py  (en otra terminal)"
+echo "  Para probarlo: python tests/smoke.py  (en otra terminal)"
 echo "  Ctrl+C para parar."
 echo
 
-exec "$PY" -m uvicorn main:app --host "$HOST" --port 8080 --reload
+exec "$PY" -m uvicorn app.main:app --host "$HOST" --port 8080 --reload

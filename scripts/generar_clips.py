@@ -27,11 +27,14 @@ import os
 import sys
 import wave
 
-import tts
+RAIZ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, RAIZ)
 
-# El directorio va al lado del código, no en /data: son parte del proyecto y
-# tienen que estar en el repositorio para poder flashearlos.
-DESTINO = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
+from app import tts  # noqa: E402
+
+# En la raíz del repositorio y no al lado de este script: los clips son del
+# proyecto, no de scripts/.
+DESTINO = os.path.join(RAIZ, "assets")
 
 # 16 kHz porque es lo que ya usa el micro y de sobras para una palabra. A este
 # ritmo, medio segundo de audio son 16 KB.

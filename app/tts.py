@@ -135,7 +135,7 @@ async def ensure_voice(voice: str, timeout: float = 300.0) -> str:
 
         ruta = _ruta_hf(voice)
 
-        import vision  # reutiliza el cliente HTTP compartido
+        from . import vision  # reutiliza el cliente HTTP compartido
 
         os.makedirs(VOICES_DIR, exist_ok=True)
         cliente = vision.get_client()

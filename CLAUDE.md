@@ -13,7 +13,7 @@ Las páginas no se versionan: `/provar` y `/admin` se abren en un navegador, no
 son API. Cuelgan de `app` directamente y no del router.
 
 Al añadir un endpoint nuevo, `@api.post(...)` y no `@app.post(...)`, o solo
-existirá en las rutas viejas. Hay una comprobación en `test_ask.py` (bloque
+existirá en las rutas viejas. Hay una comprobación en `tests/test_api.py` (bloque
 «4 ter») que verifica el prefijo, el alias y que el esquema no se duplique.
 
 ## Un proveedor de visión y uno de voz, y ya está
@@ -38,11 +38,11 @@ toca esperar el reset o pagar; ver «Cuota de Groq» aquí abajo.
 
 `groq_vision.py` también desapareció: su contenido está dentro de `vision.py`,
 que ahora es «el módulo de visión + el cliente HTTP compartido». `stt.py` y
-`tts.py` siguen haciendo `from vision import get_client`. Ojo: `tts.py` hace ese
+`tts.py` siguen haciendo `from .vision import get_client`. Ojo: `tts.py` hace ese
 import **dentro de una función** (para bajar las voces), así que no basta con
 mirar las cabeceras de los ficheros.
 
-Antes de medir o probar cualquier cosa, `python bench_latency.py --selftest`:
+Antes de medir o probar cualquier cosa, `python scripts/bench_latency.py --selftest`:
 comprueba el código sin gastar un solo token.
 
 ## Cuota de Groq: no la gastes
@@ -67,7 +67,7 @@ Se ven en vivo en las cabeceras `x-ratelimit-*` de cualquier respuesta de Groq.
    quemado. La misma foto a 896 px son 64 KB y **2.656 tokens** (cifra dicha por el
    propio error 429 de Groq: `Requested 2656`), unas 20 veces menos.
 2. **Una sola llamada por prueba**, no un barrido de idiomas y prompts. Cada variante es
-   otra factura de tokens. `bench_latency.py` obliga a esto: sin `--yes` no llama a
+   otra factura de tokens. `scripts/bench_latency.py` obliga a esto: sin `--yes` no llama a
    nadie, y aborta si el plan pasa de 20.000 tokens estimados.
 3. Para probar TTS, memoria, el panel o `/health` **no hace falta Groq**: usa `/speak`,
    `/memory`, `/admin` y `/health`, que no tocan el proveedor de visión.
@@ -79,11 +79,30 @@ Reducir es más rápido *y* más barato.
 
 ```sh
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-GROQ_API_KEY=... .venv/bin/python -m uvicorn main:app --host 127.0.0.1 --port 8080
+GROQ_API_KEY=... .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8080
 ```
 
+### Dónde está cada cosa
+
+El código está en el paquete `app/` y se arranca con **`app.main:app`**, no
+`main:app`. Dentro de `app/` los imports son relativos (`from . import vision`).
+
+```
+app/       main, vision (Groq), stt, tts (Piper), imagen, memory, panel, clips, static/
+tests/     test_api.py (automático, 0 tokens) · smoke.py (manual, gasta cuota)
+scripts/   bench_latency.py, generar_clips.py, run-local.sh, run-local.ps1
+```
+
+`tests/` y `scripts/` se ejecutan desde la raíz del repositorio
+(`python tests/test_api.py`); los dos se ponen la raíz en el `sys.path` ellos
+solos, y hay un `conftest.py` en la raíz para que `pytest` haga lo mismo.
+
+Ojo con `tts.py`: hace `from . import vision` **dentro de una función**, para
+bajar las voces reutilizando el cliente HTTP compartido. No basta con mirar las
+cabeceras de los ficheros al buscar dependencias.
+
 **La voz de Piper NO está en el repositorio**: se baja sola la primera vez (63 MB).
-Si estás corriendo `test_ask.py` en una máquina limpia, ojo con esto: el test cambia
+Si estás corriendo `tests/test_api.py` en una máquina limpia, ojo con esto: el test cambia
 el cliente HTTP compartido por uno de mentira, y si la descarga cae dentro de ese
 cambio se guarda la respuesta falsa de Groq como si fuera el `.onnx`, y luego peta
 con un `KeyError: 'num_symbols'` que no dice nada. Por eso el test baja la voz
@@ -236,7 +255,7 @@ modelo una conversación que no ha ocurrido.
 El clip **no está en el repositorio a propósito**: el dispositivo se lo baja al
 primer arranque con `/speak?text=...&audioFormat=pcm16&sampleRate=16000` y lo
 guarda en la SD (16 KB, 0,52 s). Así siempre es la voz que hay puesta en el
-servidor y no hay dos copias que se separen. `generar_clips.py` lo deja en
+servidor y no hay dos copias que se separen. `scripts/generar_clips.py` lo deja en
 `assets/` si lo quieres a mano desde el ordenador, pero esa carpeta está en el
 .gitignore. Ojo: Piper mete ruido aleatorio en cada síntesis, así que dos
 generaciones no dan ficheros idénticos al byte.
@@ -251,11 +270,11 @@ El hueco entre la foto y la primera muestra también obliga a un timeout **por
 trozo** y no total (`ASK_SILENCE_TIMEOUT_SECONDS`, 15 s): si el micro enmudece
 del todo hay que soltar la conexión con un 408 en vez de dejarla abierta.
 
-Para probarlo sin gastar nada: `python test_ask.py`. Sustituye el cliente HTTP
-por uno de mentira y comprueba el payload de verdad (los dos turnos, la
-cabecera WAV, el modelo). Ojo: `stt.py` y `groq_vision.py` hacen
-`from vision import get_client`, así que parchear solo `vision.get_client` no
-les llega — hay que tocar los tres módulos.
+Para probarlo sin gastar nada: `python tests/test_api.py`. Sustituye el cliente
+HTTP por uno de mentira y comprueba el payload de verdad (los dos turnos, la
+cabecera WAV, el modelo). Ojo: `stt.py` hace `from .vision import get_client`,
+así que parchear solo `vision.get_client` no le llega — hay que tocar los dos
+módulos.
 
 ## Endpoints de imagen: `/look` y `/ask`
 
@@ -341,5 +360,5 @@ Dos cosas del panel que costaron encontrar:
    `proxy_http_version 1.1` y las cabeceras `Upgrade`/`Connection`, o la página carga y
    se queda en blanco. Caddy lo hace solo.
 
-Para probarlo no hace falta cuota de nadie: `ADMIN_PASSWORD=proves uvicorn main:app` y
+Para probarlo no hace falta cuota de nadie: `ADMIN_PASSWORD=proves uvicorn app.main:app` y
 Playwright contra `/admin`.

@@ -29,7 +29,9 @@ import statistics
 import sys
 import time
 
-import httpx
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import httpx  # noqa: E402
 
 API_URL = os.environ.get("BONSAI_API_URL", "http://127.0.0.1:8080")
 # Prefijo de versión de la API (el mismo API_PREFIX de main.py).
@@ -216,7 +218,7 @@ def medir_ttft(var: dict) -> dict:
     mandando el texto al TTS a medida que llega en vez de esperar la frase
     entera. Ya está medido y descartado: 1.246 ms frente a 1.303 ms.
     """
-    import vision as mod
+    from app import vision as mod
 
     clave = mod.api_key()
     url = mod.GROQ_URL
@@ -302,7 +304,7 @@ def _texto_del_fragmento(datos: str) -> str:
 # --------------------------------------------------------------------------
 def selftest() -> int:
     """Valida lo que se puede validar sin llamar a nadie."""
-    import vision
+    from app import vision
 
     fallos = []
 
