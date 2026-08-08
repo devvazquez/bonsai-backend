@@ -16,36 +16,34 @@ Al añadir un endpoint nuevo, `@api.post(...)` y no `@app.post(...)`, o solo
 existirá en las rutas viejas. Hay una comprobación en `test_ask.py` (bloque
 «4 ter») que verifica el prefijo, el alias y que el esquema no se duplique.
 
-## Proveedor de visión: hay dos
+## Un proveedor de visión y uno de voz, y ya está
 
-`vision.py` es la capa común y elige entre `groq_vision.py` (por defecto) y
-`gemini_vision.py`. Se cambia con `VISION_PROVIDER` o, por petición, con el campo
-`provider` de `/look`.
+`vision.py` habla con Groq y `tts.py` sintetiza con Piper. No hay dónde elegir:
+**no existen los campos `provider` ni `tts`** en las peticiones, ni las variables
+`VISION_PROVIDER` / `TTS_PROVIDER`.
 
-**Groq es el de por defecto** porque es el más rápido y sobre todo el más regular: 552 ms
-de visión (551-554) frente a los 844 ms de Gemini (649-937), con la misma imagen.
+Los hubo. Había un `gemini_vision.py` y un edge-tts detrás de una capa que
+repartía, y se quitaron los dos porque ya estaba decidido con datos cuál ganaba:
 
-Su pega es la cuota: 8.000 tokens/minuto son unas 3 fotos por minuto a 896 px. Para
-desarrollar sin pelearse con el 429, `VISION_PROVIDER=gemini` o `"provider":"gemini"` en
-la petición.
+- **Groq** frente a Gemini: 552 ms de visión (551-554) frente a 844 ms (649-937)
+  con la misma imagen, y sobre todo mucho más regular.
+- **Piper** frente a edge-tts: 205 ms de mediana frente a 1.320 ms con texto
+  nuevo, sin red y sin caché ajena que engañe al medir.
+
+Lo que se perdía manteniéndolos era una capa de reparto de una sola rama y dos
+caminos donde uno se queda desfasado. Lo que se pierde de verdad es la vía de
+escape del 429 de Groq: **8.000 tokens/minuto son unas 3 fotos por minuto a
+896 px**, y antes se desarrollaba con Gemini para no pelearse con eso. Ahora
+toca esperar el reset o pagar; ver «Cuota de Groq» aquí abajo.
+
+`groq_vision.py` también desapareció: su contenido está dentro de `vision.py`,
+que ahora es «el módulo de visión + el cliente HTTP compartido». `stt.py` y
+`tts.py` siguen haciendo `from vision import get_client`. Ojo: `tts.py` hace ese
+import **dentro de una función** (para bajar las voces), así que no basta con
+mirar las cabeceras de los ficheros.
 
 Antes de medir o probar cualquier cosa, `python bench_latency.py --selftest`:
 comprueba el código sin gastar un solo token.
-
-### Gemini: dos cosas que se aprendieron a base de medir
-
-1. **`thinkingLevel` va anidado en `thinkingConfig`.** Suelto en
-   `generationConfig` la API responde 400. Y no es opcional: con `medium` el
-   modelo gasta ~140 tokens pensando, agota los 150 de `maxOutputTokens` y
-   devuelve la frase cortada (`finishReason: MAX_TOKENS`). Con `minimal`, 838 ms
-   y respuesta completa.
-2. **El tamaño de la imagen no cambia el coste en Gemini.** Medido con
-   `countTokens` (que es gratis): 1.108 tokens tanto a 256x170 como a 2400x1597.
-   El precio lo pone `mediaResolution` (LOW 286 / MEDIUM 577 / HIGH 1.133). Esto
-   es al revés que en Groq, que cobra por píxeles.
-
-Para contar tokens sin gastar cuota de generación:
-`POST /v1beta/models/<modelo>:countTokens`.
 
 ## Cuota de Groq: no la gastes
 
@@ -84,24 +82,17 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 GROQ_API_KEY=... .venv/bin/python -m uvicorn main:app --host 127.0.0.1 --port 8080
 ```
 
-En sesiones de Claude Code on the web el proxy intercepta el TLS con una CA propia y
-`edge-tts` (que usa `aiohttp` con `certifi`) falla con `CERTIFICATE_VERIFY_FAILED`. Se
-arregla apuntando el bundle de certifi del venv a la CA del proxy:
-
-```sh
-cp /root/.ccr/ca-bundle.crt .venv/lib/python3.11/site-packages/certifi/cacert.pem
-```
-
-Esto es cosa del sandbox, no del proyecto: en la VPS con Docker no aplica.
+**La voz de Piper NO está en el repositorio**: se baja sola la primera vez (63 MB).
+Si estás corriendo `test_ask.py` en una máquina limpia, ojo con esto: el test cambia
+el cliente HTTP compartido por uno de mentira, y si la descarga cae dentro de ese
+cambio se guarda la respuesta falsa de Groq como si fuera el `.onnx`, y luego peta
+con un `KeyError: 'num_symbols'` que no dice nada. Por eso el test baja la voz
+**antes** de poner el transporte falso, y `ensure_voice` rechaza cualquier descarga
+de menos de 1 KB.
 
 ## Configuración más rápida de `/look` (medido)
 
-`VISION_PROVIDER=groq`, imagen reducida a 896 px e `pcm16` a 16 kHz: **primer byte de
-audio a ~1.030 ms**. Groq gana a Gemini con la misma imagen (552 ms de visión frente a
-844 ms) y además es mucho más regular: 551-554 ms frente a 649-937 ms.
-
-El precio de Groq es la cuota: 8.000 tokens/minuto son unas **3 fotos por minuto** a
-896 px. Para desarrollar sin pelearse con el 429, Gemini; para la latencia, Groq.
+Imagen reducida a 896 px e `pcm16` a 16 kHz: **primer byte de audio a ~1.030 ms**.
 
 Cosas que NO cambian la latencia, comprobadas para no volver a probarlas:
 
@@ -111,35 +102,24 @@ Cosas que NO cambian la latencia, comprobadas para no volver a probarlas:
 
 ## Pendiente
 
-- El **429 de Gemini** sigue sin verificarse contra una respuesta real (nunca se agotó la
-  cuota): el parseo del `retryDelay` viene de la documentación.
+- **`/admin` no se monta.** `panel.construeix()` no lo llama nadie desde `main.py`, y
+  la propia función tampoco hace el `ui.run_with(app)` que NiceGUI necesita para
+  colgarse de FastAPI. O sea que la ruta da 404 siempre, tenga o no `ADMIN_PASSWORD`.
+  Viene de antes de la limpieza; el resto de esta nota describe cómo debería quedar.
 
 Descartado ya con datos: **streaming de visión hacia el TTS**. Medido con `--mode ttft`,
 el primer token llega a 1.246 ms y la frase completa a 1.303 ms: 57 ms de diferencia. No
 merece la pena. El cuello de botella es el TTS.
 
-## Al medir edge-tts: Microsoft cachea por texto y voz
-
-**Nunca midas edge-tts con una frase que ya hayas sintetizado antes**, ni en otra
-ejecución: la caché es del servidor de Microsoft y persiste. Medido con 8 frases nuevas
-frente a las mismas 8 repetidas:
-
-- Texto nuevo (uso real): primer trozo mediana 1.092 ms, completo 1.320 ms (cola a 2.089).
-- Texto repetido: primer trozo 262 ms, completo 430 ms.
-
-Son 3,1x. Yo mismo me colé una vez dando 509 ms como "sin caché" cuando esa frase ya se
-había sintetizado cuatro veces antes. Usa frases nuevas y cada una una sola vez.
-
-**Ya decidido: se usa Piper con `ca_ES-upc_ona-medium`** (`TTS_PROVIDER=piper`, el de por
-defecto). 205 ms de mediana frente a los 1.320 ms de edge-tts con texto nuevo, y sin caché
-que engañe porque sintetiza de cero cada vez. Una petición completa con foto pasó de
-2.575 ms a 1.170 ms. edge-tts sigue disponible con `TTS_PROVIDER=edge` o `"tts":"edge"`.
+**Se usa Piper con `ca_ES-upc_ona-medium`**: 205 ms de mediana, y sin caché que engañe
+porque sintetiza de cero cada vez. Una petición completa con foto pasó de 2.575 ms a
+1.170 ms.
 
 ### La voz no se pide: la decide el idioma
 
 Los endpoints reciben `lang` y la voz sale de un diccionario en el código,
-`piper_tts.VOICES` (y `tts.VOICES` para edge-tts). **No hay parámetro `voice`,
-ni `/voices`, ni `descargar_voces.py`**: se quitaron los tres a la vez porque
+`tts.VOICES`. **No hay parámetro `voice`, ni `/voices`, ni `descargar_voces.py`**:
+se quitaron los tres a la vez porque
 elegir voz por petición no lo usa nadie (el firmware manda un idioma) y obligaba
 a validar en el endpoint algo que ya está decidido en el servidor.
 
@@ -148,7 +128,7 @@ ese diccionario. **La ruta de descarga se deduce del nombre** (`_ruta_hf`:
 `ca_ES-upc_ona-medium` → `ca/ca_ES/upc_ona/medium`), así que no hay una segunda
 tabla que mantener al lado, que es lo que había antes.
 
-Si la voz no está en disco se baja sola (`piper_tts.ensure_voice`, con un
+Si la voz no está en disco se baja sola (`tts.ensure_voice`, con un
 candado por voz para que dos peticiones simultáneas no bajen 63 MB dos veces).
 Medido: 13,1 s la primera petición en castellano, 53 ms la siguiente.
 
@@ -164,8 +144,8 @@ contra el repositorio: `upc_ona-medium` (la de por defecto, 63 MB, 215 ms),
 `upc_ona-x_low` (20 MB) y `upc_pau-x_low` (voz masculina, 28 MB, 145 ms). No
 existen `low` ni `high` de ona ni una `medium` de pau: dan 404.
 
-Ojo: **Piper devuelve WAV y edge-tts MP3**. El formato va en `audioFormat`, no lo des por
-hecho. El WAV pesa 247 KB frente a 66 KB de la misma frase en MP3, que importa por BLE.
+El formato va en `audioFormat` y son `pcm16`, `mulaw` o `wav`. El WAV de una frase
+pesa 247 KB, que importa por BLE: para el I2S, `pcm16` o `mulaw` en crudo.
 
 ### `/speak` acepta GET además de POST
 
@@ -189,7 +169,7 @@ tres endpoints que hablan, que devuelven audio. `_RESPUESTA_AUDIO` lo arregla y 
 
 ### El WAV va entero, no troceado, y por un motivo
 
-`piper_tts.cabecera_wav` sin `datos_bytes` pone 0xFFFFFFFF en las longitudes, que es lo
+`tts.cabecera_wav` sin `datos_bytes` pone 0xFFFFFFFF en las longitudes, que es lo
 único que se puede hacer si se responde sobre la marcha. Al ESP32 le da igual, pero **un
 reproductor no puede calcular la duración y enseña 0:00 sin sonar**: se vio probando
 `/speak` desde `/docs`, con un cuerpo de 18 KB de audio de verdad que ningún `<audio>`
@@ -230,10 +210,10 @@ Cuatro cosas que conviene no volver a averiguar:
    audio, así que probar `/ask` no te deja sin `/look`. Aun así el tope de
    30 s (`ASK_MAX_AUDIO_SECONDS`) está por algo: un micro que se quede abierto
    sí puede quemar la cuota de audio del día.
-2. **La clave es la misma `GROQ_API_KEY`.** Aunque pongas `VISION_PROVIDER=gemini`,
-   `/ask` necesita Groq para transcribir y devuelve 500 sin ella.
+2. **La clave es la misma `GROQ_API_KEY`** para transcribir y para ver: sin ella,
+   `/ask` devuelve 500.
 3. **Al PCM del micro hay que ponerle cabecera WAV con las longitudes de
-   verdad.** No sirve `piper_tts.cabecera_wav`, que pone 0xFFFFFFFF porque
+   verdad.** No sirve `tts.cabecera_wav`, que pone 0xFFFFFFFF porque
    responde sobre la marcha: Whisper rechaza un WAV con longitudes imposibles.
    Por eso hay una `stt.cabecera_wav` aparte.
 4. **El m4a no empieza por su firma**: los 4 primeros bytes son el tamaño de la
@@ -286,7 +266,7 @@ vez en cuando, no para que funcionen las gafas.
 
 `/look` devuelve las muestras en crudo y en streaming, que es lo que quiere el I2S del
 MAX98357A, y el texto va en la cabecera `X-Bonsai-Text` (base64, porque las cabeceras son
-ASCII). Con `"tts":"edge"` devuelve MP3; con Piper, `pcm16`, `mulaw` o `wav`.
+ASCII). El formato es `pcm16`, `mulaw` o `wav`.
 
 **La respuesta va con `Transfer-Encoding: chunked`**, no con `Content-Length`:
 es streaming, al empezar no se sabe cuánto audio habrá. O sea que cada trozo
@@ -308,9 +288,6 @@ rápido que el tiempo real:
 No separes la visión y la voz en dos llamadas para ganar tiempo: son dos viajes de ida y
 vuelta y sale peor. Yo lo sugerí una vez y estaba equivocado; lo que se quería (evitar el
 base64 y sonar antes) lo da `/look` en una sola petición.
-
-Descartado: el **TTS de Gemini**. Soporta catalán y suena bien, pero 5.354, 7.727 y
-11.320 ms medidos. Inservible aquí.
 
 Ya arreglado: el timeout con `str(e)` vacío (ahora `vision.describe_error`) y el
 `data:image/jpeg` fijo (ahora `vision.sniff_mime`).

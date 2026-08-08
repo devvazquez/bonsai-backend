@@ -10,13 +10,13 @@ costaría. Hay que pasar `--yes` para que llame de verdad al proveedor.
 
     # Ni un token: comprueba el código y estima el coste
     python bench_latency.py --selftest
-    python bench_latency.py --provider gemini
+    python bench_latency.py --image foto.jpg
 
     # Gasta cuota: 1 petición por tamaño (lo mínimo para tener el dato)
-    python bench_latency.py --provider gemini --image foto.jpg --yes
+    python bench_latency.py --image foto.jpg --yes
 
     # Time-to-first-token, para saber si merece la pena hacer streaming
-    python bench_latency.py --provider gemini --image foto.jpg --mode ttft --yes
+    python bench_latency.py --image foto.jpg --mode ttft --yes
 """
 
 from __future__ import annotations
@@ -49,28 +49,13 @@ PRESUPUESTO_POR_DEFECTO = 20_000
 # --------------------------------------------------------------------------
 # Estimación de tokens (aproximada, para decidir si merece la pena lanzarlo)
 # --------------------------------------------------------------------------
-def tokens_estimados(provider: str, ancho: int, alto: int) -> int:
+def tokens_estimados(ancho: int, alto: int) -> int:
     """Coste aproximado en tokens de entrada de una imagen.
 
-    Los dos proveedores cobran de forma completamente distinta, y las dos
-    cuentas de aquí están calibradas contra medidas reales, no contra la
-    documentación (que en los dos casos no cuadraba).
-
-    Gemini: **plano, no depende del tamaño**. Medido con `countTokens`, la
-    misma foto cuesta 1.108 tokens tanto a 256x170 como a 2400x1597. Lo que
-    manda es `mediaResolution`. Reducir la imagen no ahorra ni un token, solo
-    tiempo de subida.
-
-    Groq: proporcional a los píxeles. Calibrado con lo que dijo su propio
-    error 429, "Requested 2656" para 672x896 (602.112 px).
+    Groq cobra proporcionalmente a los píxeles. La cuenta está calibrada con lo
+    que dijo su propio error 429, "Requested 2656" para 672x896 (602.112 px),
+    no con la documentación, que no cuadraba.
     """
-    if provider == "gemini":
-        res = (os.environ.get("GEMINI_MEDIA_RESOLUTION", "") or "").upper()
-        if "LOW" in res:
-            return 286
-        if "MEDIUM" in res:
-            return 577
-        return 1133  # lo que usa la API si no se dice nada (equivale a HIGH)
     return round(ancho * alto / 227) or 1
 
 
@@ -153,9 +138,7 @@ def variantes(path: str, tamanos: tuple[int, ...]) -> list[dict]:
 # --------------------------------------------------------------------------
 # Medición contra el servidor (/look)
 # --------------------------------------------------------------------------
-def medir_servidor(
-    cliente: httpx.Client, provider: str, var: dict, prompt: str | None
-) -> dict:
+def medir_servidor(cliente: httpx.Client, var: dict, prompt: str | None) -> dict:
     """Mide /look, que es el único endpoint de imagen que hay.
 
     Lo interesante aquí es el **primer byte de audio**: es cuando el ESP32
@@ -166,7 +149,6 @@ def medir_servidor(
         "deviceId": DEVICE_ID,
         "image": var["b64"],
         "lang": "es",
-        "provider": provider,
         "audioFormat": "pcm16",
         "sampleRate": 16000,
     }
@@ -227,52 +209,43 @@ SYSTEM_TTFT = (
 USER_TTFT = "¿Qué tengo delante? Dímelo en una o dos frases."
 
 
-def medir_ttft(provider: str, var: dict) -> dict:
+def medir_ttft(var: dict) -> dict:
     """Mide cuánto tarda en llegar el primer trozo de texto.
 
     Interesa porque si el TTFT es mucho menor que el total, conviene ir
     mandando el texto al TTS a medida que llega en vez de esperar la frase
-    entera: es la mayor reducción de latencia que le queda al proyecto.
+    entera. Ya está medido y descartado: 1.246 ms frente a 1.303 ms.
     """
-    import vision
+    import vision as mod
 
-    if provider == "gemini":
-        import gemini_vision as mod
-
-        clave = mod.api_key()
-        url = f"{mod.BASE_URL}/models/{mod.MODEL}:streamGenerateContent?alt=sse"
-        payload = mod._payload(var["b64"], SYSTEM_TTFT, USER_TTFT, True)
-    else:
-        import groq_vision as mod
-
-        clave = mod.api_key()
-        url = mod.GROQ_URL
-        payload = {
-            "model": mod.MODEL,
-            "temperature": 0.4,
-            "max_completion_tokens": 150,
-            "reasoning_effort": "none",
-            "reasoning_format": "hidden",
-            "stream": True,
-            "messages": [
-                {"role": "system", "content": SYSTEM_TTFT},
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": USER_TTFT},
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:{vision.sniff_mime(var['b64'])};base64,{var['b64']}"
-                            },
+    clave = mod.api_key()
+    url = mod.GROQ_URL
+    payload = {
+        "model": mod.MODEL,
+        "temperature": 0.4,
+        "max_completion_tokens": 150,
+        "reasoning_effort": "none",
+        "reasoning_format": "hidden",
+        "stream": True,
+        "messages": [
+            {"role": "system", "content": SYSTEM_TTFT},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": USER_TTFT},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:{mod.sniff_mime(var['b64'])};base64,{var['b64']}"
                         },
-                    ],
-                },
-            ],
-        }
+                    },
+                ],
+            },
+        ],
+    }
 
     if not clave:
-        return {"error": f"Sin API key para {provider}"}
+        return {"error": "Sin GROQ_API_KEY"}
 
     t0 = time.perf_counter()
     ttft_ms = None
@@ -294,7 +267,7 @@ def medir_ttft(provider: str, var: dict) -> dict:
                     datos = linea[5:].strip()
                     if not datos or datos == "[DONE]":
                         continue
-                    fragmento = _texto_del_fragmento(provider, datos)
+                    fragmento = _texto_del_fragmento(datos)
                     if not fragmento:
                         continue
                     if ttft_ms is None:
@@ -315,17 +288,11 @@ def medir_ttft(provider: str, var: dict) -> dict:
     }
 
 
-def _texto_del_fragmento(provider: str, datos: str) -> str:
+def _texto_del_fragmento(datos: str) -> str:
     try:
         d = json.loads(datos)
     except json.JSONDecodeError:
         return ""
-    if provider == "gemini":
-        cands = d.get("candidates") or []
-        if not cands:
-            return ""
-        partes = (cands[0].get("content") or {}).get("parts") or []
-        return "".join(p["text"] for p in partes if isinstance(p.get("text"), str))
     delta = (d.get("choices") or [{}])[0].get("delta") or {}
     return delta.get("content") or ""
 
@@ -335,8 +302,6 @@ def _texto_del_fragmento(provider: str, datos: str) -> str:
 # --------------------------------------------------------------------------
 def selftest() -> int:
     """Valida lo que se puede validar sin llamar a nadie."""
-    import gemini_vision
-    import groq_vision
     import vision
 
     fallos = []
@@ -358,17 +323,6 @@ def selftest() -> int:
     check("GIF", vision.sniff_mime(gif), "image/gif")
     check("basura -> jpeg", vision.sniff_mime("!!!"), "image/jpeg")
 
-    print("\nElección de proveedor:")
-    check("por defecto", vision.resolve(None), vision.DEFAULT_PROVIDER)
-    check("explícito groq", vision.resolve("groq"), "groq")
-    check("mayúsculas", vision.resolve("GEMINI"), "gemini")
-    try:
-        vision.resolve("openai")
-        print("  ❌ proveedor inválido: no lanzó error")
-        fallos.append("proveedor inválido aceptado")
-    except ValueError:
-        print("  ✅ proveedor inválido rechazado")
-
     print("\nMensajes de error (el bug del timeout con str(e) vacío):")
     check(
         "timeout sin mensaje",
@@ -381,88 +335,16 @@ def selftest() -> int:
     r_groq = httpx.Response(
         429, text='{"error":{"message":"Please try again in 12m39.024s"}}'
     )
-    check("groq texto", groq_vision._segundos_de_espera(r_groq), 759.024)
+    check("del texto", vision._segundos_de_espera(r_groq), 759.024)
     check(
-        "groq cabecera",
-        groq_vision._segundos_de_espera(httpx.Response(429, headers={"retry-after": "30"}, text="x")),
+        "de la cabecera",
+        vision._segundos_de_espera(httpx.Response(429, headers={"retry-after": "30"}, text="x")),
         30.0,
     )
-    r_gem = httpx.Response(
-        429,
-        text='{"error":{"details":[{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"27s"}]}}',
-    )
-    check("gemini retryDelay", gemini_vision._segundos_de_espera(r_gem), 27.0)
 
-    print("\nPayload de Gemini:")
-    p = gemini_vision._payload(png, "sistema", "usuario", True)
-    # Anidado en thinkingConfig: suelto en generationConfig da un 400.
-    check(
-        "thinkingConfig.thinkingLevel",
-        p["generationConfig"]["thinkingConfig"]["thinkingLevel"],
-        gemini_vision.THINKING_LEVEL,
-    )
-    check("nada suelto en generationConfig", "thinkingLevel" in p["generationConfig"], False)
-    check("maxOutputTokens", p["generationConfig"]["maxOutputTokens"], 150)
-    check("systemInstruction", p["systemInstruction"]["parts"][0]["text"], "sistema")
-    check("mimeType", p["contents"][0]["parts"][1]["inlineData"]["mimeType"], "image/png")
-    sin = gemini_vision._payload(png, "s", "u", False)
-    check("sin thinkingConfig", "thinkingConfig" in sin["generationConfig"], False)
-
-    print("\nRespuestas raras de Gemini:")
-    check(
-        "texto normal",
-        gemini_vision._texto_de_la_respuesta(
-            {"candidates": [{"content": {"parts": [{"text": " Un coche. "}]}}]}
-        ),
-        "Un coche.",
-    )
-    for nombre, data, aguja in (
-        ("bloqueada", {"promptFeedback": {"blockReason": "SAFETY"}}, "bloqueó"),
-        ("sin candidatos", {"candidates": []}, "candidato"),
-        (
-            "max tokens",
-            {"candidates": [{"finishReason": "MAX_TOKENS", "content": {"parts": []}}]},
-            "maxOutputTokens",
-        ),
-    ):
-        try:
-            gemini_vision._texto_de_la_respuesta(data)
-            print(f"  ❌ {nombre}: no lanzó error")
-            fallos.append(f"{nombre} no lanzó error")
-        except RuntimeError as e:
-            ok = aguja in str(e)
-            print(f"  {'✅' if ok else '❌'} {nombre}: {e}")
-            if not ok:
-                fallos.append(f"{nombre}: el mensaje no menciona {aguja!r}")
-
-    print("\nmediaResolution de Gemini (solo se manda si está configurado):")
-    guardado = os.environ.get("GEMINI_MEDIA_RESOLUTION")
-    try:
-        import importlib
-
-        for valor, esperado in (
-            ("", None),
-            ("LOW", "MEDIA_RESOLUTION_LOW"),
-            ("medium", "MEDIA_RESOLUTION_MEDIUM"),
-            ("MEDIA_RESOLUTION_HIGH", "MEDIA_RESOLUTION_HIGH"),
-        ):
-            os.environ["GEMINI_MEDIA_RESOLUTION"] = valor
-            importlib.reload(gemini_vision)
-            gen = gemini_vision._payload(png, "s", "u", True)["generationConfig"]
-            check(f"{valor or '(vacío)'}", gen.get("mediaResolution"), esperado)
-    finally:
-        if guardado is None:
-            os.environ.pop("GEMINI_MEDIA_RESOLUTION", None)
-        else:
-            os.environ["GEMINI_MEDIA_RESOLUTION"] = guardado
-        importlib.reload(gemini_vision)
-
-    print("\nEstimación de tokens por imagen:")
-    print("  Gemini cobra plano (medido con countTokens: 1.108 tokens tanto a")
-    print("  256x170 como a 2400x1597). Groq cobra por píxeles.")
-    for prov in ("gemini", "groq"):
-        for w, h in ((672, 896), (3024, 4032)):
-            print(f"  {prov:7} {w}x{h}: ~{tokens_estimados(prov, w, h):,} tokens")
+    print("\nEstimación de tokens por imagen (Groq cobra por píxeles):")
+    for w, h in ((672, 896), (3024, 4032)):
+        print(f"  {w}x{h}: ~{tokens_estimados(w, h):,} tokens")
 
     if fallos:
         print(f"\n❌ {len(fallos)} fallo(s):")
@@ -478,7 +360,6 @@ def main() -> int:
     p = argparse.ArgumentParser(
         description="Mide la latencia del backend. Por defecto NO gasta cuota.",
     )
-    p.add_argument("--provider", default="gemini", choices=["gemini", "groq", "both"])
     p.add_argument("--image", help="Ruta de la imagen de prueba")
     p.add_argument("--mode", default="server", choices=["server", "ttft"])
     p.add_argument("--repeat", type=int, default=1, help="Repeticiones (por defecto 1)")
@@ -509,7 +390,6 @@ def main() -> int:
     vars_ = variantes(args.image, tamanos)
     if args.only_small:
         vars_ = [min(vars_, key=lambda v: v["bytes"])]
-    provs = ["gemini", "groq"] if args.provider == "both" else [args.provider]
 
     # --- Plan y coste antes de gastar nada -------------------------------
     print(f"\nPlan: modo {args.mode}, {args.repeat} repetición(es)")
@@ -517,11 +397,10 @@ def main() -> int:
     print("-" * 64)
     coste = 0
     for v in vars_:
-        est = {pr: tokens_estimados(pr, v["ancho"], v["alto"]) for pr in provs}
-        coste += sum(est.values()) * args.repeat
-        detalle = "  ".join(f"{pr}: ~{n:,}" for pr, n in est.items())
-        print(f"{v['nombre']:<26} {v['bytes']/1024:>7.0f} {detalle:>28}")
-    peticiones = len(vars_) * len(provs) * args.repeat
+        est = tokens_estimados(v["ancho"], v["alto"])
+        coste += est * args.repeat
+        print(f"{v['nombre']:<26} {v['bytes']/1024:>7.0f} {'~' + f'{est:,}':>28}")
+    peticiones = len(vars_) * args.repeat
     print("-" * 64)
     print(f"Total: {peticiones} petición(es), ~{coste:,} tokens de entrada estimados")
 
@@ -536,28 +415,27 @@ def main() -> int:
         return 0
 
     # --- Medición --------------------------------------------------------
-    resultados: dict[tuple[str, str], list[dict]] = {}
+    resultados: dict[str, list[dict]] = {}
     parar = False
     with httpx.Client(timeout=120.0) as cliente:
-        for prov in provs:
-            for v in vars_:
-                if parar:
+        for v in vars_:
+            if parar:
+                break
+            nombre = v["nombre"]
+            resultados[nombre] = []
+            for i in range(args.repeat):
+                if args.mode == "ttft":
+                    r = medir_ttft(v)
+                else:
+                    r = medir_servidor(cliente, v, args.prompt)
+                if "error" in r:
+                    print(f"⚠️  {nombre}: {r['error']}")
+                    if r.get("parar"):
+                        print("   Cuota agotada: se para para no insistir.")
+                        parar = True
                     break
-                clave = (prov, v["nombre"])
-                resultados[clave] = []
-                for i in range(args.repeat):
-                    if args.mode == "ttft":
-                        r = medir_ttft(prov, v)
-                    else:
-                        r = medir_servidor(cliente, prov, v, args.prompt)
-                    if "error" in r:
-                        print(f"⚠️  {prov} / {v['nombre']}: {r['error']}")
-                        if r.get("parar"):
-                            print("   Cuota agotada: se para para no insistir.")
-                            parar = True
-                        break
-                    resultados[clave].append(r)
-                    print(f"   {prov} / {v['nombre']} [{i+1}/{args.repeat}] ok")
+                resultados[nombre].append(r)
+                print(f"   {nombre} [{i+1}/{args.repeat}] ok")
 
     # --- Resultados ------------------------------------------------------
     utiles = {k: v for k, v in resultados.items() if v}
@@ -572,28 +450,28 @@ def main() -> int:
     print("\n" + "=" * 78)
     if args.mode == "ttft":
         print("TIME TO FIRST TOKEN (medianas)")
-        print(f"{'proveedor / imagen':<38} {'TTFT':>10} {'total':>10} {'trozos':>8}")
+        print(f"{'imagen':<38} {'TTFT':>10} {'total':>10} {'trozos':>8}")
         print("-" * 78)
-        for (prov, nombre), ms in utiles.items():
-            print(f"{prov + ' / ' + nombre:<38} {med(ms,'ttft_ms'):>9.0f}ms "
+        for nombre, ms in utiles.items():
+            print(f"{nombre:<38} {med(ms,'ttft_ms'):>9.0f}ms "
                   f"{med(ms,'total_ms'):>9.0f}ms {med(ms,'trozos'):>8.0f}")
         print("-" * 78)
         peor = max(utiles.items(), key=lambda kv: med(kv[1], "total_ms"))
         ahorro = med(peor[1], "total_ms") - med(peor[1], "ttft_ms")
         print(f"\nMandando el texto al TTS en cuanto llega el primer token se "
-              f"adelantarían\nhasta ~{ahorro:.0f} ms en {peor[0][0]} / {peor[0][1]}.")
+              f"adelantarían\nhasta ~{ahorro:.0f} ms en {peor[0]}.")
     else:
         print("LATENCIA POR PARTES (medianas)")
-        print(f"{'proveedor / imagen':<34} {'reducir':>9} {'visión':>9} "
+        print(f"{'imagen':<34} {'reducir':>9} {'visión':>9} "
               f"{'audio':>9} {'1er byte':>10} {'KB':>7}")
         print("-" * 82)
-        for (prov, nombre), ms in utiles.items():
-            print(f"{prov + ' / ' + nombre:<34} {med(ms,'reducir_ms'):>8.0f}ms "
+        for nombre, ms in utiles.items():
+            print(f"{nombre:<34} {med(ms,'reducir_ms'):>8.0f}ms "
                   f"{med(ms,'vision_ms'):>8.0f}ms {med(ms,'audio_ms'):>8.0f}ms "
                   f"{med(ms,'primer_audio_ms'):>9.0f}ms {med(ms,'bytes')/1024:>7.0f}")
         print("-" * 82)
         mejor = min(utiles.items(), key=lambda kv: med(kv[1], "primer_audio_ms"))
-        print(f"\nMás rápido al primer byte de audio: {mejor[0][0]} / {mejor[0][1]} "
+        print(f"\nMás rápido al primer byte de audio: {mejor[0]} "
               f"({med(mejor[1],'primer_audio_ms'):.0f} ms)")
         for v in vars_:
             if v["resize_ms"]:
@@ -601,9 +479,9 @@ def main() -> int:
                       f"(+{v['encode_ms']:.0f} ms de base64)")
 
     print("\nTextos devueltos:")
-    for (prov, nombre), ms in utiles.items():
+    for nombre, ms in utiles.items():
         if ms and ms[0].get("texto"):
-            print(f"  [{prov} / {nombre}] {ms[0]['texto'][:150]}")
+            print(f"  [{nombre}] {ms[0]['texto'][:150]}")
     return 0
 
 

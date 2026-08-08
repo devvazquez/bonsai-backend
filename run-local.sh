@@ -35,16 +35,10 @@ set -a
 . ./.env
 set +a
 
-# Solo se avisa de la clave del proveedor que se vaya a usar de verdad.
-PROVEEDOR="${VISION_PROVIDER:-groq}"
-if [ "$PROVEEDOR" = "groq" ]; then
-  CLAVE="${GROQ_API_KEY:-}"; ESPERADO="la-teva-api-key-de-groq"; NOMBRE="GROQ_API_KEY"
-else
-  CLAVE="${GEMINI_API_KEY:-}"; ESPERADO="tu-api-key-de-gemini"; NOMBRE="GEMINI_API_KEY"
-fi
-if [ -z "$CLAVE" ] || [ "$CLAVE" = "$ESPERADO" ]; then
+CLAVE="${GROQ_API_KEY:-}"
+if [ -z "$CLAVE" ] || [ "$CLAVE" = "la-teva-api-key-de-groq" ]; then
   echo
-  echo "Falta $NOMBRE en el .env: /api/v1/look dará error 500."
+  echo "Falta GROQ_API_KEY en el .env: /api/v1/look dará error 500."
   echo "El resto (/api/v1/speak, /memory, /provar) sí funcionará:"
   echo "la voz es Piper y va en local, sin ninguna clave."
 fi

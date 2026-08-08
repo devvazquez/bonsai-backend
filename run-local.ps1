@@ -37,16 +37,10 @@ Get-Content ".env" | ForEach-Object {
     }
 }
 
-# Solo se avisa de la clave del proveedor que se vaya a usar de verdad.
-$proveedor = if ($env:VISION_PROVIDER) { $env:VISION_PROVIDER } else { "groq" }
-if ($proveedor -eq "groq") {
-    $clave = $env:GROQ_API_KEY; $esperado = "la-teva-api-key-de-groq"; $nombre = "GROQ_API_KEY"
-} else {
-    $clave = $env:GEMINI_API_KEY; $esperado = "tu-api-key-de-gemini"; $nombre = "GEMINI_API_KEY"
-}
-if (-not $clave -or $clave -eq $esperado) {
+$clave = $env:GROQ_API_KEY
+if (-not $clave -or $clave -eq "la-teva-api-key-de-groq") {
     Write-Host ""
-    Write-Host "Falta $nombre en el .env: /api/v1/look dara error 500." -ForegroundColor Yellow
+    Write-Host "Falta GROQ_API_KEY en el .env: /api/v1/look dara error 500." -ForegroundColor Yellow
     Write-Host "El resto (/api/v1/speak, /memory, /provar) si funcionara:" -ForegroundColor Yellow
     Write-Host "la voz es Piper y va en local, sin ninguna clave." -ForegroundColor Yellow
 }

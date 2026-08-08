@@ -38,10 +38,6 @@ API_PREFIX = "/api/v1"
 DEVICE_ID = "bonsai-01"
 LANG = "ca"  # 'ca' catalán, 'es' castellano, 'en' inglés
 API_TOKEN = ""  # el mismo BONSAI_API_TOKEN del servidor (vacío = sin auth)
-# Vacíos = lo que tenga configurado el servidor (groq + piper por defecto).
-# Se cambian en marcha con "config provider gemini" y "config tts edge".
-PROVIDER = ""   # '' | 'groq' | 'gemini'
-TTS = ""        # '' | 'piper' | 'edge'
 TIMEOUT = 60
 
 
@@ -102,10 +98,6 @@ def cmd_describe(args: list[str]) -> None:
             "audioFormat": "wav"}
     if prompt:
         body["prompt"] = prompt
-    if PROVIDER:
-        body["provider"] = PROVIDER
-    if TTS:
-        body["tts"] = TTS
 
     print(f"📤 Enviando ({len(img_bytes)/1024:.1f} KB, codificada en {ms(t_encode)})...")
 
@@ -166,14 +158,10 @@ def cmd_speak(args: list[str]) -> None:
         return
     text = " ".join(args)
     params = {"text": text, "lang": LANG}
-    if TTS:
-        params["tts_provider"] = TTS
     audio, elapsed = call(f"/speak?{urllib.parse.urlencode(params)}", "POST", raw=True)
     if not audio:
         return
-    # Sin leer la cabecera no se sabe el formato, pero un WAV empieza por RIFF.
-    ext = "wav" if audio[:4] == b"RIFF" else "mp3"
-    out = f"voz_{int(time.time())}.{ext}"
+    out = f"voz_{int(time.time())}.wav"
     open(out, "wb").write(audio)
     print(f"🔊 {out} ({len(audio)/1024:.1f} KB en {ms(elapsed)})")
     play(out)
@@ -213,31 +201,26 @@ def cmd_health(_: list[str]) -> None:
     if not data:
         return
     print(f"💚 servidor vivo ({ms(elapsed)})")
-    for nombre, p in (data.get("providers") or {}).items():
-        marca = "◀ por defecto" if nombre == data.get("defaultProvider") else ""
-        clave = "clave ok" if p.get("keyConfigured") else "SIN CLAVE"
-        print(f"   👁️  {nombre:<7} {p.get('model'):<24} {clave:<10} {marca}")
+    v = data.get("vision") or {}
+    clave = "clave ok" if v.get("keyConfigured") else "SIN CLAVE"
+    print(f"   👁️  {v.get('model'):<24} {clave}")
     t = data.get("tts") or {}
-    aviso = ""
-    if t.get("active") != t.get("configured"):
-        # Es el caso que importa ver: Piper no arrancó y se tiró de edge-tts.
-        aviso = f"  ⚠️  se pidió {t.get('configured')}: {(t.get('piper') or {}).get('error')}"
-    print(f"   🔊 {t.get('active')} ({t.get('format')}){aviso}")
+    piper = t.get("piper") or {}
+    # Lo que importa ver: si Piper no arrancó, las gafas se quedan mudas.
+    aviso = "" if piper.get("ok") else f"  ⚠️  Piper no arrancó: {piper.get('error')}"
+    print(f"   🔊 piper ({t.get('format')}){aviso}")
 
 
 def cmd_config(args: list[str]) -> None:
-    global API_URL, DEVICE_ID, LANG, API_TOKEN, PROVIDER, TTS
+    global API_URL, DEVICE_ID, LANG, API_TOKEN
     if not args:
         shown = (API_TOKEN[:4] + "…") if API_TOKEN else "(sin token)"
         print(f"API_URL   = {API_URL}{API_PREFIX}\nDEVICE_ID = {DEVICE_ID}\n"
-              f"LANG      = {LANG}\nTOKEN     = {shown}\n"
-              f"PROVIDER  = {PROVIDER or '(el del servidor)'}\n"
-              f"TTS       = {TTS or '(el del servidor)'}")
+              f"LANG      = {LANG}\nTOKEN     = {shown}")
         return
     key, *rest = args
     if not rest:
-        print("Uso: config url <url> | device <id> | lang <ca|es|en> | token <token>"
-              " | provider <gemini|groq> | tts <piper|edge>")
+        print("Uso: config url <url> | device <id> | lang <ca|es|en> | token <token>")
         return
     if key == "url":
         API_URL = rest[0].rstrip("/")
@@ -247,13 +230,8 @@ def cmd_config(args: list[str]) -> None:
         LANG = rest[0]
     elif key == "token":
         API_TOKEN = rest[0]
-    elif key == "provider":
-        # "auto" o "-" vuelve a dejar decidir al servidor.
-        PROVIDER = "" if rest[0] in ("auto", "-") else rest[0]
-    elif key == "tts":
-        TTS = "" if rest[0] in ("auto", "-") else rest[0]
     else:
-        print("Clave desconocida. Usa: url, device, lang, token, provider o tts")
+        print("Clave desconocida. Usa: url, device, lang o token")
         return
     cmd_config([])
 
@@ -266,15 +244,8 @@ Comandos:
   memories                     Lista los recuerdos
   forget <id>                  Borra un recuerdo (vale el prefijo)
   health                       Comprueba que el servidor responde
-  config [url|device|lang|token|provider|tts] <v>   Ver o cambiar configuración
+  config [url|device|lang|token] <v>   Ver o cambiar configuración
   help / exit
-
-Para comparar proveedores sin reiniciar el servidor:
-  config provider gemini       visión con Gemini (cuota holgada, más lento)
-  config provider groq         visión con Groq (el de por defecto)
-  config tts piper             voz en local (rápida)
-  config tts edge              voz de Microsoft (mejor timbre, más lenta)
-  config provider auto         volver a lo que tenga el servidor
 """
 
 COMMANDS = {

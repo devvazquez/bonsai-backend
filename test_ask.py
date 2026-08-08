@@ -25,21 +25,21 @@ os.environ["BONSAI_CAPTURES_DIR"] = tempfile.mkdtemp(prefix="captures-")
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import httpx
-import groq_vision
 import memory
 import stt
+import tts
 import vision
 import main
 
 
 def usa(transporte):
-    """Cambia el cliente HTTP en los tres sitios que lo tienen importado.
+    """Cambia el cliente HTTP en los dos sitios que lo tienen importado.
 
-    stt y groq_vision hacen `from vision import get_client`, así que se quedan
-    con la función de entonces: tocar solo vision.get_client no les llega.
+    stt hace `from vision import get_client`, así que se queda con la función
+    de entonces: tocar solo vision.get_client no le llega.
     """
     cliente = httpx.AsyncClient(transport=httpx.MockTransport(transporte))
-    for modulo in (vision, stt, groq_vision):
+    for modulo in (vision, stt):
         modulo.get_client = lambda c=cliente: c
 
 enviadas = []
@@ -62,6 +62,11 @@ def responde(request: httpx.Request) -> httpx.Response:
     })
 
 
+# La voz de Piper se baja ANTES de poner el transporte de mentira. Si no, la
+# descarga (que usa el mismo cliente compartido) se come la respuesta falsa de
+# Groq y deja un .onnx de 64 bytes que luego peta con un KeyError críptico.
+asyncio.run(tts.ensure_voice(tts.voice_for("ca")))
+
 usa(responde)
 
 # Una imagen JPEG mínima de verdad (firma incluida, para probar sniff_mime) y
@@ -72,6 +77,77 @@ PCM = b"\x11\x22" * 16000        # 1,0 s a 16 kHz
 
 def trama(foto: bytes, audio: bytes) -> bytes:
     return struct.pack(">I", len(foto)) + foto + audio
+
+
+async def socket_de_verdad():
+    """La subida en trozos, por un socket de verdad y no por ASGI.
+
+    El resto de la prueba usa httpx.ASGITransport, que llama a la app
+    directamente: eso comprueba que el código se comporta, pero no que uvicorn
+    entregue los trozos según llegan. El firmware manda `Transfer-Encoding:
+    chunked` sin `Content-Length`, que es justo lo que se rompió una vez.
+    """
+    import socket
+    import threading
+
+    import uvicorn
+
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))          # puerto efímero: nada de puertos fijos
+    puerto = sock.getsockname()[1]
+    sock.close()
+
+    config = uvicorn.Config(main.app, host="127.0.0.1", port=puerto,
+                            log_level="warning", lifespan="off")
+    servidor = uvicorn.Server(config)
+    hilo = threading.Thread(target=servidor.run, daemon=True)
+    hilo.start()
+    for _ in range(100):
+        await asyncio.sleep(0.05)
+        if servidor.started:
+            break
+
+    antes = len(memory.list_captures())
+    s = socket.create_connection(("127.0.0.1", puerto), 5)
+    s.sendall(
+        f"POST /api/v1/ask?deviceId=socket&micRate=16000 HTTP/1.1\r\n"
+        f"Host: 127.0.0.1:{puerto}\r\n"
+        "Content-Type: application/octet-stream\r\n"
+        "Transfer-Encoding: chunked\r\n\r\n".encode()
+    )
+
+    def trozo(d: bytes) -> bytes:
+        return f"{len(d):x}\r\n".encode() + d + b"\r\n"
+
+    s.sendall(trozo(struct.pack(">I", len(FOTO)) + FOTO))
+
+    # Se habla medio segundo en trozos de 50 ms, como haría el micro.
+    guardada_mientras_hablaba = False
+    for _ in range(10):
+        await asyncio.sleep(0.05)
+        s.sendall(trozo(b"\x11\x22" * 800))
+        if len(memory.list_captures()) > antes:
+            guardada_mientras_hablaba = True
+    s.sendall(b"0\r\n\r\n")
+
+    respuesta = b""
+    while b"\r\n\r\n" not in respuesta:
+        datos = await asyncio.to_thread(s.recv, 4096)
+        if not datos:
+            break
+        respuesta += datos
+    s.close()
+    cabeceras = respuesta.split(b"\r\n\r\n")[0].decode(errors="replace")
+
+    check("por un socket real, chunked y sin Content-Length -> 200",
+          cabeceras.startswith("HTTP/1.1 200"), cabeceras.splitlines()[0])
+    check("y la respuesta también vuelve chunked",
+          "transfer-encoding: chunked" in cabeceras.lower())
+    check("la foto se guarda mientras el micro todavía sube",
+          guardada_mientras_hablaba)
+
+    servidor.should_exit = True
+    hilo.join(timeout=5)
 
 
 async def principal():
@@ -259,10 +335,10 @@ async def principal():
         check("un idioma desconocido -> 400 con la lista",
               r.status_code == 400 and "ca" in r.text, r.text[:160])
 
-        # Y el que sí existe usa la voz de piper_tts.VOICES, sin pedirla.
+        # Y el que sí existe usa la voz de tts.VOICES, sin pedirla.
         r = await c.get("/speak?text=hola&lang=ca")
         check("la voz del idioma es la del mapa",
-              r.headers.get("x-bonsai-voice") == main.piper_tts.VOICES["ca"],
+              r.headers.get("x-bonsai-voice") == main.tts.VOICES["ca"],
               r.headers.get("x-bonsai-voice", "(cap)"))
         check("el esquema dice que la respuesta es audio, no JSON",
               "audio/wav" in rutas["get"]["responses"]["200"]["content"]
@@ -381,6 +457,9 @@ async def principal():
         check("cuota agotada -> 429 con Retry-After",
               r.status_code == 429 and r.headers.get("retry-after") == "13",
               f"{r.status_code} {r.headers.get('retry-after')}")
+
+    usa(responde)
+    await socket_de_verdad()
 
     print()
     print(f"{len(fallos)} fallos" if fallos else "TODO CORRECTO, 0 tokens gastados")

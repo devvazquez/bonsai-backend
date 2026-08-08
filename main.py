@@ -2,9 +2,9 @@
 
 `/look` es el endpoint principal y lo llama la ESP32-S3 directamente: recibe la
 foto, la reduce, le añade contexto (fecha y recuerdos del dispositivo), pide la
-descripción al proveedor de visión (`vision.py`: Groq o Gemini) y devuelve el
-audio en crudo y en streaming, listo para el I2S del MAX98357A, sin base64 ni
-nada que descodificar en el microcontrolador.
+descripción al modelo de visión (`vision.py`, Groq) y devuelve el audio en
+crudo y en streaming, listo para el I2S del MAX98357A, sin base64 ni nada que
+descodificar en el microcontrolador.
 
 `/ask` es el mismo camino pero con voz por delante: la foto y, a continuación,
 lo que está diciendo quien lleva las gafas. Se transcribe con Whisper turbo en
@@ -37,7 +37,6 @@ from pydantic import BaseModel, Field
 import clips
 import imagen
 import memory
-import piper_tts
 import stt
 import tts
 import vision
@@ -89,8 +88,8 @@ def require_token(x_api_token: str | None = Header(default=None)) -> None:
 @app.on_event("startup")
 async def _startup() -> None:
     memory.init_db()
-    # Abre la conexión TLS con el proveedor por defecto antes de la primera
-    # foto: son ~220 ms que, si no, los paga quien lleve las gafas.
+    # Abre la conexión TLS con Groq antes de la primera foto: son ~220 ms que,
+    # si no, los paga quien lleve las gafas.
     await vision.warmup()
     # Y baja/carga el modelo de Piper: ~63 MB una vez y ~1,2 s de carga que
     # tampoco tiene por qué pagar la primera foto.
@@ -110,16 +109,12 @@ class LookRequest(BaseModel):
     deviceId: str
     prompt: str | None = None
     lang: str | None = None   # 'ca', 'es', 'en'. La voz la decide el idioma.
-    # 'groq' o 'gemini'. Si no se dice nada, el de VISION_PROVIDER (groq).
-    provider: str | None = None
-    # 'piper' o 'edge'. Si no se dice nada, el de TTS_PROVIDER (piper).
-    tts: str | None = None
     # 'pcm16' (lo que quiere el I2S del MAX98357A), 'mulaw' (la mitad de
-    # bytes), 'wav' (con cabecera, para navegadores) o 'mp3' (solo con edge).
+    # bytes) o 'wav' (con cabecera, para navegadores).
     audioFormat: str | None = None
     sampleRate: int | None = None
     # Lado largo al que reducir la foto en el servidor. 0 desactiva; si no
-    # se dice nada, manda IMAGE_MAX_SIDE según el proveedor.
+    # se dice nada, manda IMAGE_MAX_SIDE.
     maxSide: int | None = None
 
 
@@ -215,26 +210,17 @@ def health() -> dict[str, Any]:
         # Para que el firmware pueda comprobar contra qué versión habla sin
         # tener que deducirlo de la URL que ya conoce.
         "api": {"version": API_VERSION, "prefix": API_PREFIX},
-        "defaultProvider": vision.DEFAULT_PROVIDER,
-        "providers": {
-            p: {
-                "model": vision.model_for(p),
-                "keyConfigured": bool(vision.api_key_for(p)),
-            }
-            for p in vision.PROVIDERS
+        "vision": {
+            "model": vision.MODEL,
+            "keyConfigured": bool(vision.api_key()),
         },
         "tts": {
-            # "configured" es lo que se pidió y "active" lo que se usará: si
-            # Piper falló y se está tirando de edge-tts, aquí se ve.
-            "configured": tts.DEFAULT_PROVIDER,
-            "active": tts.effective_provider(),
-            "format": tts.format_for(),
-            "piper": tts.piper_status(),
+            "format": "wav",
+            "piper": tts.status(),
         },
         "stt": {
-            # Lo que necesita /ask. Va aparte de "providers" porque siempre es
-            # Groq, aunque la visión sea Gemini: la clave que mira es la misma
-            # GROQ_API_KEY, y sin ella /ask da 500 aunque /look funcione.
+            # Lo que necesita /ask. Va aparte porque es otro modelo, aunque la
+            # clave sea la misma GROQ_API_KEY.
             "model": stt.MODEL,
             "keyConfigured": bool(stt.api_key()),
             "maxAudioSeconds": ASK_MAX_SEGUNDOS,
@@ -243,7 +229,6 @@ def health() -> dict[str, Any]:
 
 
 async def _plan_de_audio(
-    tts_provider: str | None,
     audio_format: str | None,
     lang: str | None,
     sample_rate: int | None,
@@ -254,14 +239,9 @@ async def _plan_de_audio(
     audio del micro: si el formato pedido no existe, más vale decirlo enseguida
     que después de haber gastado cuota o de haber subido medio megabyte.
 
-    La voz no se pide: se pide un idioma y la voz sale de `tts.VOICES` /
-    `piper_tts.VOICES`, que es donde se cambian.
+    La voz no se pide: se pide un idioma y la voz sale de `tts.VOICES`, que es
+    donde se cambian.
     """
-    try:
-        proveedor = tts.effective_provider(tts_provider)
-    except ValueError as e:
-        raise HTTPException(400, str(e)) from e
-
     # Un idioma que no esté definido se dice, no se traduce por lo bajo al
     # catalán: si alguien pide 'fr' y le contestan en catalán sin avisar,
     # parece que el servidor esté roto.
@@ -269,36 +249,25 @@ async def _plan_de_audio(
         raise HTTPException(
             400,
             f"Idioma desconocido: {lang!r}. Hay {', '.join(tts.idiomas())}. "
-            "Se añaden en piper_tts.VOICES (y tts.VOICES para edge-tts).",
+            "Se añaden en tts.VOICES.",
         )
 
-    # Con edge-tts el formato no se elige: Microsoft manda MP3 y punto. Con
-    # Piper sí, porque las muestras salen del modelo y se convierten aquí.
-    if proveedor == "edge":
-        if audio_format and audio_format.lower() != "mp3":
-            raise HTTPException(
-                400,
-                f"Con edge-tts el audio solo puede ser mp3, no {audio_format!r}. "
-                "Para pcm16 o mulaw usa Piper, que es el de por defecto.",
-            )
-        formato = "mp3"
-    else:
-        formato = (audio_format or "pcm16").lower()
-        if formato not in piper_tts.FORMATOS:
-            raise HTTPException(
-                400,
-                f"Formato desconocido: {formato!r}. Usa uno de: "
-                f"{', '.join(piper_tts.FORMATOS)}",
-            )
+    formato = (audio_format or "pcm16").lower()
+    if formato not in tts.FORMATOS:
+        raise HTTPException(
+            400,
+            f"Formato desconocido: {formato!r}. Usa uno de: "
+            f"{', '.join(tts.FORMATOS)}",
+        )
 
-    if sample_rate and sample_rate not in piper_tts.SAMPLE_RATES:
+    if sample_rate and sample_rate not in tts.SAMPLE_RATES:
         raise HTTPException(
             400,
             f"sampleRate no soportado: {sample_rate}. Usa uno de: "
-            f"{', '.join(str(s) for s in piper_tts.SAMPLE_RATES)}",
+            f"{', '.join(str(s) for s in tts.SAMPLE_RATES)}",
         )
 
-    voz = tts.voice_for(lang or tts.DEFAULT_LANG, proveedor)
+    voz = tts.voice_for(lang or tts.DEFAULT_LANG)
 
     # Si la voz de ese idioma no está en disco, se baja aquí (~63 MB, una sola
     # vez). Va antes de leer el sample_rate del modelo a propósito: sin el
@@ -308,7 +277,7 @@ async def _plan_de_audio(
     # Y va en este punto de la petición porque es antes de gastar cuota de
     # visión y, en /ask, antes de que el micro suba nada.
     try:
-        await tts.ensure_voice(voz, proveedor)
+        await tts.ensure_voice(voz)
     except Exception as e:
         raise HTTPException(
             502,
@@ -316,14 +285,10 @@ async def _plan_de_audio(
             f"{(lang or tts.DEFAULT_LANG)!r}: {describe_error(e)}",
         ) from e
 
-    if formato == "mp3":
-        rate, bits = 24000, 16          # lo que devuelve edge-tts
-    else:
-        rate = sample_rate or piper_tts.sample_rate_de(voz)
-        bits = 8 if formato == "mulaw" else 16
+    rate = sample_rate or tts.sample_rate_de(voz)
+    bits = 8 if formato == "mulaw" else 16
 
-    return {"tts": proveedor, "formato": formato, "voz": voz,
-            "rate": rate, "bits": bits}
+    return {"formato": formato, "voz": voz, "rate": rate, "bits": bits}
 
 
 # Content-Type de cada formato, para que el cliente no tenga que adivinar.
@@ -331,7 +296,6 @@ _TIPOS_AUDIO = {
     "pcm16": "audio/L16;rate={rate};channels=1",
     "mulaw": "audio/basic;rate={rate}",
     "wav": "audio/wav",
-    "mp3": "audio/mpeg",
 }
 
 # El cuerpo de /look, /ask y /speak es audio, no JSON. Sin decirlo, FastAPI
@@ -357,17 +321,15 @@ async def _responde_con_voz(
     que decir en voz alta y en el formato que quiera el I2S.
     """
     formato, rate = plan["formato"], plan["rate"]
-    if formato == "mp3":
-        trozos = tts.stream(texto, plan["voz"], "edge")
-    else:
-        trozos = piper_tts.stream_raw(texto, plan["voz"], formato, rate)
+    trozos = tts.stream_raw(texto, plan["voz"], formato, rate)
 
     expuestas = sorted({*cabeceras, "X-Bonsai-Text", "X-Bonsai-Tts",
                         "X-Bonsai-Format", "X-Bonsai-Rate", "X-Bonsai-Bits",
                         "X-Bonsai-Channels", "X-Bonsai-Voice"})
     cabeceras.update({
         "X-Bonsai-Text": base64.b64encode(texto.encode()).decode("ascii"),
-        "X-Bonsai-Tts": plan["tts"],
+        # Se mantiene aunque ya no haya donde elegir: lo lee /provar.
+        "X-Bonsai-Tts": "piper",
         "X-Bonsai-Format": formato,
         "X-Bonsai-Rate": str(rate),
         "X-Bonsai-Bits": str(plan["bits"]),
@@ -382,7 +344,7 @@ async def _responde_con_voz(
     try:
         primero = await anext(trozos)
     except StopAsyncIteration:
-        raise HTTPException(502, f"{plan['tts']} no devolvió audio.") from None
+        raise HTTPException(502, "Piper no devolvió audio.") from None
     except Exception as e:
         raise HTTPException(
             502, f"Fallo al generar el audio: {describe_error(e)}"
@@ -399,7 +361,7 @@ async def _responde_con_voz(
     if formato == "wav":
         datos = primero + b"".join([t async for t in trozos])
         return Response(
-            piper_tts.cabecera_wav(rate, plan["bits"], len(datos)) + datos,
+            tts.cabecera_wav(rate, plan["bits"], len(datos)) + datos,
             media_type=_TIPOS_AUDIO[formato].format(rate=rate),
             headers=cabeceras,
         )
@@ -424,10 +386,9 @@ async def _describir(
     Devuelve el texto y unas cabeceras con el detalle de qué lo generó, para
     poder darlo sin cuerpo JSON (el cuerpo es el audio).
     """
-    texto, timings, provider = await _vision_paso(req, preamble)
+    texto, timings = await _vision_paso(req, preamble)
     return texto, {
-        "X-Bonsai-Provider": provider,
-        "X-Bonsai-Model": vision.model_for(provider),
+        "X-Bonsai-Model": vision.MODEL,
         "X-Bonsai-Vision-Ms": str(timings.get("vision_ms", 0)),
         # Reducir una foto de 12 MP son ~200-300 ms que si no aparecen aquí
         # descuadran cualquier medición hecha desde fuera.
@@ -437,18 +398,10 @@ async def _describir(
 
 async def _vision_paso(
     req: LookRequest, preamble: tuple[tuple[str, str], ...] | None = None
-) -> tuple[str, dict[str, int], str]:
-    try:
-        provider = vision.resolve(req.provider)
-    except ValueError as e:
-        raise HTTPException(400, str(e)) from e
-
-    api_key = vision.api_key_for(provider)
+) -> tuple[str, dict[str, int]]:
+    api_key = vision.api_key()
     if not api_key:
-        variable = "GEMINI_API_KEY" if provider == "gemini" else "GROQ_API_KEY"
-        raise HTTPException(
-            500, f"{variable} no está configurada en el servidor (proveedor: {provider})."
-        )
+        raise HTTPException(500, "GROQ_API_KEY no está configurada en el servidor.")
 
     lang = (req.lang or tts.DEFAULT_LANG).lower()
     timings: dict[str, int] = {}
@@ -461,7 +414,7 @@ async def _vision_paso(
     # bloquearía el bucle de eventos con una foto de 12 MP.
     imagen_b64 = req.image
     reducir = req.maxSide if req.maxSide is not None else (
-        imagen.MAX_SIDE if imagen.enabled_for(provider) else 0
+        imagen.MAX_SIDE if imagen.ENABLED else 0
     )
     if reducir > 0:
         t0 = time.perf_counter()
@@ -474,7 +427,6 @@ async def _vision_paso(
     t0 = time.perf_counter()
     try:
         description = await vision.describe_image(
-            provider=provider,
             api_key=api_key,
             image_base64=imagen_b64,
             system_prompt=build_system_prompt(lang, memory_context),
@@ -499,7 +451,7 @@ async def _vision_paso(
     if not description:
         raise HTTPException(502, "El modelo de visión devolvió una respuesta vacía.")
 
-    return description, timings, provider
+    return description, timings
 
 
 @api.post("/look", dependencies=[Depends(require_token)],
@@ -523,7 +475,7 @@ async def look(req: LookRequest) -> Response:
     cabeceras HTTP son ASCII), y el formato en `X-Bonsai-Rate`, `-Bits` y
     `-Channels`, para no tener que adivinar nada al configurar el I2S.
     """
-    plan = await _plan_de_audio(req.tts, req.audioFormat, req.lang,
+    plan = await _plan_de_audio(req.audioFormat, req.lang,
                                 req.sampleRate)
     texto, cabeceras = await _describir(req)
     return await _responde_con_voz(texto, plan, cabeceras)
@@ -638,8 +590,6 @@ async def ask(
     request: Request,
     deviceId: str = "bonsai-01",
     lang: str | None = None,
-    provider: str | None = None,
-    tts_provider: str | None = Query(default=None, alias="tts"),
     audioFormat: str | None = None,
     sampleRate: int | None = None,
     micRate: int = 16000,
@@ -668,7 +618,7 @@ async def ask(
     en `X-Bonsai-Transcript`, para poder ver por qué ha contestado eso.
 
     La voz no se pide: sale del idioma (`lang`), y qué voz le toca a cada
-    idioma se decide en `piper_tts.VOICES`.
+    idioma se decide en `tts.VOICES`.
 
     Sobre la cuota: transcribir **no** gasta los tokens de texto de Groq
     (Whisper se factura por segundos de audio), así que probar `/ask` no te
@@ -676,21 +626,13 @@ async def ask(
     """
     # Todo lo que se puede validar sin gastar nada se valida antes de que el
     # dispositivo suba medio megabyte para nada.
-    plan = await _plan_de_audio(tts_provider, audioFormat, lang, sampleRate)
+    plan = await _plan_de_audio(audioFormat, lang, sampleRate)
     if micRate <= 0:
         raise HTTPException(400, f"micRate ha de ser positivo, no {micRate}.")
     if not stt.api_key():
         raise HTTPException(
-            500,
-            "GROQ_API_KEY no está configurada: /ask la necesita para "
-            "transcribir, aunque la visión vaya con Gemini.",
+            500, "GROQ_API_KEY no está configurada: /ask la necesita para transcribir."
         )
-
-    # Se resuelve ya para fallar pronto y para saber si toca reducir la foto.
-    try:
-        proveedor = vision.resolve(provider)
-    except ValueError as e:
-        raise HTTPException(400, str(e)) from e
 
     t_total = time.perf_counter()
     trama = _Trama(request)
@@ -708,7 +650,7 @@ async def ask(
     # mientras tanto, así que para cuando llegue la pregunta ya está lista y
     # no suma nada al tiempo que se espera con las gafas puestas.
     lado = maxSide if maxSide is not None else (
-        imagen.MAX_SIDE if imagen.enabled_for(proveedor) else 0
+        imagen.MAX_SIDE if imagen.ENABLED else 0
     )
     tarea_imagen = None
     imagen_b64 = base64.b64encode(foto).decode("ascii")
@@ -790,7 +732,6 @@ async def ask(
         deviceId=deviceId,
         prompt=transcripcion,
         lang=lang,
-        provider=proveedor,
         # Ya está reducida (o no tocaba): que _vision_paso no lo repita.
         maxSide=0,
     )
@@ -848,25 +789,16 @@ async def speak(
     lang: str = Query(
         default=tts.DEFAULT_LANG, description="Idioma de la voz: ca, es o en."
     ),
-    # Se llama tts_provider y no tts (que es el alias en /ask) porque así lo
-    # llaman ya /provar y test_bonsai.py.
-    tts_provider: str | None = Query(
-        default=None,
-        description="piper o edge. Si no se dice nada, el de TTS_PROVIDER.",
-    ),
     audioFormat: str | None = Query(
         default=None,
-        # Sin enum a propósito: los formatos válidos dependen del motor, y un
-        # 422 de FastAPI diría bastante menos que el 400 de _plan_de_audio.
-        description="Con Piper (por defecto): pcm16 | mulaw | wav. Con "
-                    "edge-tts solo mp3, que es lo único que devuelve "
-                    "Microsoft. Si no se dice nada, wav.",
+        # Sin enum a propósito: un 422 de FastAPI diría bastante menos que el
+        # 400 de _plan_de_audio, que lista los que hay.
+        description="pcm16 | mulaw | wav. Si no se dice nada, wav.",
     ),
     sampleRate: int | None = Query(
         default=None,
-        description="8000, 16000 o 22050 Hz. Solo con Piper: el mp3 de "
-                    "edge-tts sale siempre a 24000. Por defecto, el del "
-                    "modelo de la voz (22050 en las catalanas).",
+        description="8000, 16000 o 22050 Hz. Por defecto, el del modelo de la "
+                    "voz (22050 en las catalanas).",
     ),
 ):
     """Solo texto a voz. Devuelve el audio en crudo (útil para la ESP32).
@@ -878,15 +810,14 @@ async def speak(
 
     Formatos que acepta, que son los mismos de /look y /ask:
 
-    | audioFormat | Motor | Qué sale |
-    | --- | --- | --- |
-    | `pcm16` | Piper | Muestras de 16 bits con signo, sin cabecera: lo que quiere el I2S del MAX98357A |
-    | `mulaw` | Piper | μ-law de 8 bits, la mitad de bytes que pcm16 |
-    | `wav`   | Piper | Lo mismo que pcm16 pero con cabecera RIFF, para navegadores. **Es el de por defecto aquí** |
-    | `mp3`   | edge-tts | Lo único que da Microsoft (`?tts=edge`) |
+    | audioFormat | Qué sale |
+    | --- | --- |
+    | `pcm16` | Muestras de 16 bits con signo, sin cabecera: lo que quiere el I2S del MAX98357A |
+    | `mulaw` | μ-law de 8 bits, la mitad de bytes que pcm16 |
+    | `wav`   | Lo mismo que pcm16 pero con cabecera RIFF, para navegadores. **Es el de por defecto aquí** |
 
-    Y `sampleRate` es 8000, 16000 o 22050 Hz (con `mp3` no se elige: 24000).
-    Cualquier otro valor da un 400 con la lista, antes de sintetizar nada.
+    Y `sampleRate` es 8000, 16000 o 22050 Hz. Cualquier otro valor da un 400
+    con la lista, antes de sintetizar nada.
 
     Ojo con el formato de por defecto: aquí es **wav**, no `pcm16` como en
     /look. Es de cuando /speak solo servía para escuchar cosas desde el
@@ -899,15 +830,13 @@ async def speak(
         curl -X POST "$API/speak?text=Digue'm!&audioFormat=pcm16&sampleRate=16000" \
              -o digam.pcm
 
-    Con Piper llega de una vez (~205 ms, no hay nada que trocear). Con edge-tts
-    va por trozos, así que se puede empezar a reproducir a los ~1,1 s en vez de
-    esperar el MP3 entero, y el formato solo puede ser mp3.
+    Llega de una vez (~205 ms, no hay nada que trocear).
 
     El formato de verdad de la respuesta va en las cabeceras `X-Bonsai-Format`,
     `-Rate`, `-Bits` y `-Channels`, para no tener que adivinar nada al
     configurar el I2S.
     """
-    plan = await _plan_de_audio(tts_provider, audioFormat, lang, sampleRate)
+    plan = await _plan_de_audio(audioFormat, lang, sampleRate)
     # /speak nació devolviendo WAV con Piper y hay quien lo llama sin decir
     # formato: se respeta salvo que se pida otra cosa.
     if audioFormat is None and plan["formato"] == "pcm16":
@@ -990,7 +919,6 @@ def listar_clips(lang: str = tts.DEFAULT_LANG) -> dict[str, Any]:
 async def clip(
     clip_id: str,
     lang: str = tts.DEFAULT_LANG,
-    tts_provider: str | None = None,
     audioFormat: str | None = None,
     sampleRate: int | None = None,
 ):
@@ -1012,7 +940,7 @@ async def clip(
             f"{', '.join(clips.idiomas_de(clip_id))}. Se añade en clips.py.",
         )
 
-    plan = await _plan_de_audio(tts_provider, audioFormat, lang, sampleRate)
+    plan = await _plan_de_audio(audioFormat, lang, sampleRate)
     # Same as /speak: whoever asks without a format is saving it to a file.
     if audioFormat is None and plan["formato"] == "pcm16":
         plan["formato"] = "wav"

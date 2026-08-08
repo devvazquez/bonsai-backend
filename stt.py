@@ -64,7 +64,7 @@ def cabecera_wav(sample_rate: int, muestras_bytes: int, bits: int = 16) -> bytes
     """Cabecera WAV con las longitudes de verdad.
 
     Aquí sí se sabe cuánto audio hay (ya ha llegado entero), al revés que en
-    `piper_tts.cabecera_wav`, que responde sobre la marcha y tiene que poner
+    `tts.cabecera_wav`, que responde sobre la marcha y tiene que poner
     0xFFFFFFFF. Whisper rechaza un WAV con longitudes imposibles, así que esta
     no puede reutilizar aquella.
     """
@@ -126,7 +126,7 @@ async def transcribe(
     clave = api_key_ or api_key()
     if not clave:
         raise RuntimeError("GROQ_API_KEY no está configurada: /ask la necesita "
-                           "para transcribir, aunque la visión use Gemini.")
+                           "para transcribir.")
 
     cuerpo, ext, _ = envolver(audio, sample_rate)
 

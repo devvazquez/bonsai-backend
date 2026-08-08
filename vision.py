@@ -1,32 +1,41 @@
-"""Lo común a todos los proveedores de visión (Groq, Gemini).
+"""Visión: describe una imagen con el modelo de Groq.
 
-Aquí vive lo que no depende de quién describa la imagen: el cliente HTTP
-compartido, la excepción de cuota agotada y la detección del formato de la
-imagen. Cada proveedor vive en su propio módulo (`groq_vision`,
-`gemini_vision`) y expone la misma función `describe_image`.
+Además del cliente de Groq, aquí vive lo común que usan otros módulos: el
+cliente HTTP compartido (`stt` y `tts` también lo reutilizan), la
+excepción de cuota agotada y la detección del formato de la imagen.
+
+Hubo un segundo proveedor (Gemini) y un módulo aparte por cada uno para poder
+cambiarlos. Se quitó: Groq es más rápido y sobre todo más regular (552 ms de
+visión frente a 844 ms, con la misma imagen), y mantener la capa de reparto
+para una sola rama solo daba pie a que se quedara desfasada.
 """
 
 from __future__ import annotations
 
 import base64
 import os
-from typing import Any
+import re
 
 import httpx
 
-# Proveedor por defecto: Groq, porque es el más rápido y sobre todo el más
-# regular. Medido con la misma imagen a 896 px: 552 ms de visión (551-554)
-# frente a los 844 ms de Gemini (649-937).
-#
-# Su pega es la cuota: 8.000 tokens/minuto son unas 3 fotos por minuto. Para
-# desarrollar sin pelearse con el 429, VISION_PROVIDER=gemini.
-DEFAULT_PROVIDER = os.environ.get("VISION_PROVIDER", "groq").lower()
+GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
-PROVIDERS = ("gemini", "groq")
+# Sirve para abrir la conexión TLS sin gastar tokens (ver warmup).
+WARMUP_URL = "https://api.groq.com/openai/v1/models"
+
+# Comprueba el nombre vigente en https://console.groq.com/docs/models
+# (Groq renombra y retira modelos con frecuencia).
+MODEL = os.environ.get("GROQ_VISION_MODEL", "qwen/qwen3.6-27b")
+
+_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+
+# Groq no siempre manda la cabecera retry-after, pero sí dice el rato en el
+# texto del error: "Please try again in 16.56s" (o "in 12m39.024s").
+_ESPERA_RE = re.compile(r"try again in\s+(?:(\d+)m)?([\d.]+)s", re.IGNORECASE)
 
 
 class VisionRateLimit(Exception):
-    """Se ha agotado la cuota del proveedor (429).
+    """Se ha agotado la cuota de Groq (429).
 
     Se distingue del resto de errores para poder devolver un 429 al cliente,
     con el rato que hay que esperar, en vez de un 502 genérico que parece un
@@ -36,6 +45,10 @@ class VisionRateLimit(Exception):
     def __init__(self, mensaje: str, retry_after: float | None = None) -> None:
         super().__init__(mensaje)
         self.retry_after = retry_after
+
+
+# Se mantiene el nombre antiguo por si algo de fuera lo importa.
+GroqRateLimit = VisionRateLimit
 
 
 def describe_error(e: BaseException) -> str:
@@ -51,9 +64,8 @@ def describe_error(e: BaseException) -> str:
 # --------------------------------------------------------------------------
 # Formato de la imagen
 # --------------------------------------------------------------------------
-# Groq quiere un data URL y Gemini un `mimeType` aparte, pero los dos
-# necesitan saber el formato de verdad: mandar un PNG diciendo que es JPEG
-# funciona de milagro, no por diseño.
+# El data URL tiene que decir el formato de verdad: mandar un PNG diciendo que
+# es JPEG funciona de milagro, no por diseño.
 _FIRMAS = (
     (b"\x89PNG\r\n\x1a\n", "image/png"),
     (b"\xff\xd8\xff", "image/jpeg"),
@@ -110,40 +122,28 @@ async def aclose() -> None:
 
 
 # --------------------------------------------------------------------------
-# Registro de proveedores
+# Groq
 # --------------------------------------------------------------------------
-def _modulo(provider: str) -> Any:
-    # Importación diferida: los módulos de proveedor importan este, así que
-    # hacerlo arriba sería un import circular.
-    if provider == "groq":
-        import groq_vision
-
-        return groq_vision
-    if provider == "gemini":
-        import gemini_vision
-
-        return gemini_vision
-    raise ValueError(
-        f"Proveedor de visión desconocido: {provider!r}. Usa uno de: {', '.join(PROVIDERS)}"
-    )
+def api_key() -> str:
+    return os.environ.get("GROQ_API_KEY", "")
 
 
-def resolve(provider: str | None) -> str:
-    """Normaliza el proveedor pedido y comprueba que existe."""
-    elegido = (provider or DEFAULT_PROVIDER).lower()
-    if elegido not in PROVIDERS:
-        raise ValueError(
-            f"Proveedor de visión desconocido: {elegido!r}. Usa uno de: {', '.join(PROVIDERS)}"
-        )
-    return elegido
+def auth_headers(key: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
 
 
-def model_for(provider: str) -> str:
-    return _modulo(resolve(provider)).MODEL
-
-
-def api_key_for(provider: str) -> str:
-    return _modulo(resolve(provider)).api_key()
+def _segundos_de_espera(resp: httpx.Response) -> float | None:
+    cabecera = resp.headers.get("retry-after")
+    if cabecera:
+        try:
+            return float(cabecera)
+        except ValueError:
+            pass
+    m = _ESPERA_RE.search(resp.text)
+    if m:
+        minutos = float(m.group(1) or 0)
+        return minutos * 60 + float(m.group(2))
+    return None
 
 
 # Turnos de conversación que van delante de la pregunta y la imagen.
@@ -163,48 +163,90 @@ PREAMBULO_VEU: tuple[tuple[str, str], ...] = (
 
 
 async def describe_image(
-    provider: str | None,
+    api_key: str,
     image_base64: str,
     system_prompt: str,
     user_prompt: str,
-    api_key: str | None = None,
     timeout: float = 30.0,
     preamble: tuple[tuple[str, str], ...] | None = None,
 ) -> str:
-    """Describe la imagen con el proveedor pedido (o el de por defecto).
+    """Describe la imagen con el modelo de visión de Groq.
 
     `preamble` son turnos ("user"/"assistant", texto) que se insertan entre el
     system prompt y el mensaje con la imagen. Lo usa /ask para dar por dicha la
     palabra de activación (ver PREAMBULO_VEU).
     """
-    elegido = resolve(provider)
-    modulo = _modulo(elegido)
-    return await modulo.describe_image(
-        api_key=api_key or modulo.api_key(),
-        image_base64=image_base64,
-        system_prompt=system_prompt,
-        user_prompt=user_prompt,
+    # Turnos previos, si los hay: van entre el system y el mensaje con la
+    # imagen. Aquí el formato es el de OpenAI, así que valen tal cual.
+    previos = [{"role": rol, "content": texto} for rol, texto in (preamble or ())]
+
+    payload = {
+        "model": MODEL,
+        "temperature": 0.4,
+        # Techo de seguridad: la respuesta se lee en voz alta, así que una
+        # respuesta larga son segundos de espera. El límite real lo pone el
+        # prompt (1-2 frases); esto solo evita que se desmadre.
+        "max_completion_tokens": 150,
+        # Desactiva el razonamiento paso a paso: para describir una imagen no
+        # aporta nada y solo añade latencia y tokens.
+        "reasoning_effort": "none",
+        "reasoning_format": "hidden",
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            *previos,
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": user_prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            # El formato se detecta de verdad: antes iba
+                            # "image/jpeg" fijo aunque la imagen fuese PNG.
+                            "url": f"data:{sniff_mime(image_base64)};base64,{image_base64}"
+                        },
+                    },
+                ],
+            },
+        ],
+    }
+
+    resp = await get_client().post(
+        GROQ_URL,
+        json=payload,
+        headers=auth_headers(api_key),
         timeout=timeout,
-        preamble=preamble,
     )
 
+    if resp.status_code == 429:
+        raise VisionRateLimit(
+            f"Cuota de Groq agotada: {resp.text[:300]}",
+            _segundos_de_espera(resp),
+        )
 
-async def warmup(provider: str | None = None) -> bool:
+    if resp.status_code >= 400:
+        raise RuntimeError(f"Error de Groq ({resp.status_code}): {resp.text[:300]}")
+
+    data = resp.json()
+    raw = (data.get("choices") or [{}])[0].get("message", {}).get("content", "")
+    # Red de seguridad por si el modelo ignora reasoning_format.
+    return _THINK_RE.sub("", raw).strip()
+
+
+async def warmup() -> bool:
     """Abre la conexión TLS antes de la primera foto.
 
     El saludo TLS son ~220 ms que, si no se hace esto, los paga la primera
     persona que use las gafas. Pide un listado de modelos: no gasta ni un
     token de la cuota.
     """
-    elegido = resolve(provider)
-    modulo = _modulo(elegido)
-    clave = modulo.api_key()
+    clave = api_key()
     if not clave:
         return False
     try:
         await get_client().get(
-            modulo.WARMUP_URL,
-            headers=modulo.auth_headers(clave),
+            WARMUP_URL,
+            headers=auth_headers(clave),
             timeout=10.0,
         )
         return True

@@ -27,7 +27,6 @@ import os
 import sys
 import wave
 
-import piper_tts
 import tts
 
 # El directorio va al lado del código, no en /data: son parte del proyecto y
@@ -46,14 +45,14 @@ CLIPS = {
 
 
 async def genera(nombre: str, texto: str, voz: str) -> int:
-    crudo = b"".join([t async for t in piper_tts.stream_raw(texto, voz, "pcm16", RATE)])
+    crudo = b"".join([t async for t in tts.stream_raw(texto, voz, "pcm16", RATE)])
 
     pcm = os.path.join(DESTINO, f"{nombre}-{RATE // 1000}k.pcm")
     with open(pcm, "wb") as f:
         f.write(crudo)
 
     # El WAV se escribe con las longitudes de verdad, no con las 0xFFFFFFFF de
-    # piper_tts.cabecera_wav: aquí ya sabemos cuánto audio hay y esto es un
+    # tts.cabecera_wav: aquí ya sabemos cuánto audio hay y esto es un
     # fichero para escuchar, no una respuesta en streaming.
     wav = os.path.join(DESTINO, f"{nombre}-{RATE // 1000}k.wav")
     with wave.open(wav, "wb") as w:
@@ -69,9 +68,9 @@ async def genera(nombre: str, texto: str, voz: str) -> int:
 
 async def main() -> int:
     os.makedirs(DESTINO, exist_ok=True)
-    voz = tts.voice_for("ca", "piper")
+    voz = tts.voice_for("ca")
     # Si el modelo no está en disco se baja solo (~63 MB, una única vez).
-    await piper_tts.ensure_voice(voz)
+    await tts.ensure_voice(voz)
 
     for nombre, texto in CLIPS.items():
         await genera(nombre, texto, voz)
