@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
-"""Banco de pruebas de latencia del backend de Bonsai.
+"""Latency benchmark for the Bonsai backend.
 
-La latencia es lo que decide si las gafas se sienten inmediatas o torpes, así
-que aquí se mide por partes: reducir la imagen, codificarla, la red, el modelo
-de visión y el TTS. Sin desglose no se sabe dónde atacar.
+Latency is what decides whether the glasses feel instant or clumsy, so this
+measures it in parts: resizing the image, encoding it, the network, the vision
+model and the TTS. Without the breakdown there is no way to know what to attack.
 
-CUIDADO CON LA CUOTA. Por defecto **no gasta nada**: enseña el plan y lo que
-costaría. Hay que pasar `--yes` para que llame de verdad al proveedor.
+MIND THE QUOTA. By default it **spends nothing**: it shows the plan and what it
+would cost. You have to pass `--yes` for it to actually call the provider.
 
-    # Ni un token: comprueba el código y estima el coste
-    python bench_latency.py --selftest
-    python bench_latency.py --image foto.jpg
+    # Not a single token: checks the code and estimates the cost
+    python scripts/bench_latency.py --selftest
+    python scripts/bench_latency.py --image photo.jpg
 
-    # Gasta cuota: 1 petición por tamaño (lo mínimo para tener el dato)
-    python bench_latency.py --image foto.jpg --yes
+    # Spends quota: 1 request per size (the minimum to get the number)
+    python scripts/bench_latency.py --image photo.jpg --yes
 
-    # Time-to-first-token, para saber si merece la pena hacer streaming
-    python bench_latency.py --image foto.jpg --mode ttft --yes
+    # Time-to-first-token, to see whether streaming is worth it
+    python scripts/bench_latency.py --image photo.jpg --mode ttft --yes
 """
 
 from __future__ import annotations
@@ -34,60 +34,60 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import httpx  # noqa: E402
 
 API_URL = os.environ.get("BONSAI_API_URL", "http://127.0.0.1:8080")
-# Prefijo de versión de la API (el mismo API_PREFIX de main.py).
+# API version prefix (the same API_PREFIX as main.py).
 API_PREFIX = os.environ.get("BONSAI_API_PREFIX", "/api/v1")
 API_TOKEN = os.environ.get("BONSAI_API_TOKEN", "")
 DEVICE_ID = "bench"
 
-# Lados largos a comparar. 896 px es el que interesa: por debajo se pierde
-# detalle para leer texto, por encima solo se pagan tokens y latencia.
-TAMANOS = (672, 896, 1568)
+# Long sides to compare. 896 px is the interesting one: below it you lose the
+# detail needed to read text, above it you only pay tokens and latency.
+SIZES = (672, 896, 1568)
 
-# Tope de tokens que el banco puede gastar de una tirada. Es una red para no
-# repetir lo de quemar los 200.000 tokens del día en seis pruebas.
-PRESUPUESTO_POR_DEFECTO = 20_000
+# Cap on the tokens one run may spend. A net so we don't repeat burning the
+# 200,000 tokens of the day on six tests.
+DEFAULT_BUDGET = 20_000
 
 
 # --------------------------------------------------------------------------
-# Estimación de tokens (aproximada, para decidir si merece la pena lanzarlo)
+# Token estimation (approximate, to decide whether a run is worth launching)
 # --------------------------------------------------------------------------
-def tokens_estimados(ancho: int, alto: int) -> int:
-    """Coste aproximado en tokens de entrada de una imagen.
+def estimated_tokens(width: int, height: int) -> int:
+    """Approximate input-token cost of an image.
 
-    Groq cobra proporcionalmente a los píxeles. La cuenta está calibrada con lo
-    que dijo su propio error 429, "Requested 2656" para 672x896 (602.112 px),
-    no con la documentación, que no cuadraba.
+    Groq charges proportionally to pixels. Calibrated against its own 429 error,
+    "Requested 2656" for 672x896 (602,112 px), not against the docs, which
+    didn't add up.
     """
-    return round(ancho * alto / 227) or 1
+    return round(width * height / 227) or 1
 
 
 # --------------------------------------------------------------------------
-# Preparación de la imagen
+# Image preparation
 # --------------------------------------------------------------------------
-def variantes(path: str, tamanos: tuple[int, ...]) -> list[dict]:
-    """Devuelve la imagen original y sus versiones reducidas, ya en base64.
+def variants(path: str, sizes: tuple[int, ...]) -> list[dict]:
+    """Returns the original image and its downscaled versions, already base64.
 
-    El tiempo de reducir y de codificar se mide aquí porque también cuenta:
-    forma parte de lo que espera la persona.
+    Resize and encode time are measured here because they count too: they are
+    part of what the person waits for.
     """
-    crudo = open(path, "rb").read()
+    raw = open(path, "rb").read()
 
     t0 = time.perf_counter()
-    b64 = base64.b64encode(crudo).decode()
+    b64 = base64.b64encode(raw).decode()
     encode_ms = (time.perf_counter() - t0) * 1000
 
     try:
         from PIL import Image, ImageOps
     except ImportError:
-        print("⚠️  Sin Pillow: solo se mide la imagen original.")
-        print("   Instálalo con: pip install pillow\n")
+        print("⚠️  No Pillow: only the original image is measured.")
+        print("   Install it with: pip install pillow\n")
         return [
             {
-                "nombre": "original",
+                "name": "original",
                 "b64": b64,
-                "bytes": len(crudo),
-                "ancho": 0,
-                "alto": 0,
+                "bytes": len(raw),
+                "width": 0,
+                "height": 0,
                 "resize_ms": 0.0,
                 "encode_ms": encode_ms,
             }
@@ -96,58 +96,58 @@ def variantes(path: str, tamanos: tuple[int, ...]) -> list[dict]:
     import io
 
     original = ImageOps.exif_transpose(Image.open(path)).convert("RGB")
-    salida = [
+    out = [
         {
-            "nombre": f"original {original.width}x{original.height}",
+            "name": f"original {original.width}x{original.height}",
             "b64": b64,
-            "bytes": len(crudo),
-            "ancho": original.width,
-            "alto": original.height,
+            "bytes": len(raw),
+            "width": original.width,
+            "height": original.height,
             "resize_ms": 0.0,
             "encode_ms": encode_ms,
         }
     ]
 
-    for lado in tamanos:
-        if max(original.size) <= lado:
+    for side in sizes:
+        if max(original.size) <= side:
             continue
         t0 = time.perf_counter()
         im = original.copy()
-        im.thumbnail((lado, lado))
+        im.thumbnail((side, side))
         buf = io.BytesIO()
         im.save(buf, "JPEG", quality=80, optimize=True)
-        crudo_r = buf.getvalue()
+        raw_r = buf.getvalue()
         resize_ms = (time.perf_counter() - t0) * 1000
 
         t0 = time.perf_counter()
-        b64_r = base64.b64encode(crudo_r).decode()
+        b64_r = base64.b64encode(raw_r).decode()
         enc_ms = (time.perf_counter() - t0) * 1000
 
-        salida.append(
+        out.append(
             {
-                "nombre": f"{lado} px ({im.width}x{im.height})",
+                "name": f"{side} px ({im.width}x{im.height})",
                 "b64": b64_r,
-                "bytes": len(crudo_r),
-                "ancho": im.width,
-                "alto": im.height,
+                "bytes": len(raw_r),
+                "width": im.width,
+                "height": im.height,
                 "resize_ms": resize_ms,
                 "encode_ms": enc_ms,
             }
         )
-    return salida
+    return out
 
 
 # --------------------------------------------------------------------------
-# Medición contra el servidor (/look)
+# Measurement against the server (/look)
 # --------------------------------------------------------------------------
-def medir_servidor(cliente: httpx.Client, var: dict, prompt: str | None) -> dict:
-    """Mide /look, que es el único endpoint de imagen que hay.
+def measure_server(client: httpx.Client, var: dict, prompt: str | None) -> dict:
+    """Measures /look, the only image endpoint there is.
 
-    Lo interesante aquí es el **primer byte de audio**: es cuando el ESP32
-    podría empezar a sonar. El total importa mucho menos, porque a partir del
-    primer byte la descarga se solapa con la reproducción.
+    What matters here is the **first audio byte**: that is when the ESP32 could
+    start playing. The total matters far less, because from the first byte on
+    the download overlaps with playback.
     """
-    cuerpo = {
+    body = {
         "deviceId": DEVICE_ID,
         "image": var["b64"],
         "lang": "es",
@@ -155,55 +155,57 @@ def medir_servidor(cliente: httpx.Client, var: dict, prompt: str | None) -> dict
         "sampleRate": 16000,
     }
     if prompt:
-        cuerpo["prompt"] = prompt
+        body["prompt"] = prompt
 
-    cabeceras = {"Content-Type": "application/json"}
+    headers = {"Content-Type": "application/json"}
     if API_TOKEN:
-        cabeceras["X-API-Token"] = API_TOKEN
+        headers["X-API-Token"] = API_TOKEN
 
     t0 = time.perf_counter()
-    primero_ms, n = None, 0
+    first_ms, n = None, 0
     try:
-        with cliente.stream(
-            "POST", f"{API_URL}{API_PREFIX}/look", json=cuerpo, headers=cabeceras
+        with client.stream(
+            "POST", f"{API_URL}{API_PREFIX}/look", json=body, headers=headers
         ) as r:
             if r.status_code == 429:
                 r.read()
-                espera = r.headers.get("Retry-After", "?")
-                return {"error": f"429 cuota agotada (Retry-After: {espera}s)",
-                        "parar": True}
+                wait = r.headers.get("Retry-After", "?")
+                return {"error": f"429 quota exhausted (Retry-After: {wait}s)",
+                        "stop": True}
             if r.status_code >= 400:
                 r.read()
                 return {"error": f"HTTP {r.status_code}: {r.text[:200]}"}
-            cab = r.headers
-            for trozo in r.iter_bytes():
-                if trozo:
-                    if primero_ms is None:
-                        primero_ms = (time.perf_counter() - t0) * 1000
-                    n += len(trozo)
+            head = r.headers
+            for chunk in r.iter_bytes():
+                if chunk:
+                    if first_ms is None:
+                        first_ms = (time.perf_counter() - t0) * 1000
+                    n += len(chunk)
     except Exception as e:
         return {"error": f"{type(e).__name__}: {e}"}
     total_ms = (time.perf_counter() - t0) * 1000
 
-    vision = int(cab.get("x-bonsai-vision-ms", 0))
-    reducir = int(cab.get("x-bonsai-resize-ms", 0))
+    vision = int(head.get("x-bonsai-vision-ms", 0))
+    resize = int(head.get("x-bonsai-resize-ms", 0))
     return {
         "total_ms": total_ms,
-        "primer_audio_ms": primero_ms or total_ms,
+        "first_audio_ms": first_ms or total_ms,
         "vision_ms": vision,
-        "reducir_ms": reducir,
-        # Lo que no es visión ni reducir es sintetizar y mover los bytes.
-        "audio_ms": max(0.0, (primero_ms or total_ms) - vision - reducir),
+        "resize_ms": resize,
+        # Whatever isn't vision or resize is synthesis and moving the bytes.
+        "audio_ms": max(0.0, (first_ms or total_ms) - vision - resize),
         "bytes": n,
-        "texto": base64.b64decode(cab.get("x-bonsai-text", "")).decode(
+        "text": base64.b64decode(head.get("x-bonsai-text", "")).decode(
             "utf-8", "replace"),
-        "modelo": cab.get("x-bonsai-model", "?"),
+        "model": head.get("x-bonsai-model", "?"),
     }
 
 
 # --------------------------------------------------------------------------
-# Time-to-first-token, hablando directamente con el proveedor
+# Time-to-first-token, talking straight to the provider
 # --------------------------------------------------------------------------
+# Kept in Spanish on purpose: the server path above is measured with lang="es",
+# so both modes ask the model for the same kind of answer.
 SYSTEM_TTFT = (
     "Eres el asistente de visión de unas gafas. Contesta en 1 o 2 frases "
     "cortas, en castellano, sin preámbulos."
@@ -211,16 +213,16 @@ SYSTEM_TTFT = (
 USER_TTFT = "¿Qué tengo delante? Dímelo en una o dos frases."
 
 
-def medir_ttft(var: dict) -> dict:
-    """Mide cuánto tarda en llegar el primer trozo de texto.
+def measure_ttft(var: dict) -> dict:
+    """Measures how long the first chunk of text takes to arrive.
 
-    Interesa porque si el TTFT es mucho menor que el total, conviene ir
-    mandando el texto al TTS a medida que llega en vez de esperar la frase
-    entera. Ya está medido y descartado: 1.246 ms frente a 1.303 ms.
+    Interesting because if TTFT is much lower than the total it pays to feed the
+    TTS as the text arrives instead of waiting for the whole sentence. Already
+    measured and discarded: 1,246 ms vs 1,303 ms.
     """
     from app import vision as mod
 
-    clave = mod.api_key()
+    key = mod.api_key()
     url = mod.GROQ_URL
     payload = {
         "model": mod.MODEL,
@@ -246,53 +248,53 @@ def medir_ttft(var: dict) -> dict:
         ],
     }
 
-    if not clave:
-        return {"error": "Sin GROQ_API_KEY"}
+    if not key:
+        return {"error": "No GROQ_API_KEY"}
 
     t0 = time.perf_counter()
     ttft_ms = None
-    trozos = 0
-    texto = []
+    chunks = 0
+    text = []
     try:
         with httpx.Client(timeout=60.0) as c:
             with c.stream(
-                "POST", url, json=payload, headers=mod.auth_headers(clave)
+                "POST", url, json=payload, headers=mod.auth_headers(key)
             ) as r:
                 if r.status_code >= 400:
                     r.read()
                     if r.status_code == 429:
-                        return {"error": "429 cuota agotada", "parar": True}
+                        return {"error": "429 quota exhausted", "stop": True}
                     return {"error": f"HTTP {r.status_code}: {r.text[:200]}"}
-                for linea in r.iter_lines():
-                    if not linea.startswith("data:"):
+                for line in r.iter_lines():
+                    if not line.startswith("data:"):
                         continue
-                    datos = linea[5:].strip()
-                    if not datos or datos == "[DONE]":
+                    data = line[5:].strip()
+                    if not data or data == "[DONE]":
                         continue
-                    fragmento = _texto_del_fragmento(datos)
-                    if not fragmento:
+                    piece = _text_of_chunk(data)
+                    if not piece:
                         continue
                     if ttft_ms is None:
                         ttft_ms = (time.perf_counter() - t0) * 1000
-                    trozos += 1
-                    texto.append(fragmento)
+                    chunks += 1
+                    text.append(piece)
     except Exception as e:
         return {"error": f"{type(e).__name__}: {e}"}
 
     total_ms = (time.perf_counter() - t0) * 1000
     if ttft_ms is None:
-        return {"error": "No llegó ningún token"}
+        return {"error": "No token arrived"}
     return {
         "ttft_ms": ttft_ms,
         "total_ms": total_ms,
-        "trozos": trozos,
-        "texto": "".join(texto).strip(),
+        "chunks": chunks,
+        "text": "".join(text).strip(),
     }
 
 
-def _texto_del_fragmento(datos: str) -> str:
+def _text_of_chunk(data: str) -> str:
     try:
-        d = json.loads(datos)
+        d = json.loads(data)
     except json.JSONDecodeError:
         return ""
     delta = (d.get("choices") or [{}])[0].get("delta") or {}
@@ -300,21 +302,21 @@ def _texto_del_fragmento(datos: str) -> str:
 
 
 # --------------------------------------------------------------------------
-# Comprobaciones que no gastan ni un token
+# Checks that don't spend a single token
 # --------------------------------------------------------------------------
 def selftest() -> int:
-    """Valida lo que se puede validar sin llamar a nadie."""
+    """Validates everything that can be validated without calling anyone."""
     from app import vision
 
-    fallos = []
+    failures = []
 
-    def check(nombre: str, obtenido, esperado) -> None:
-        ok = obtenido == esperado
-        print(f"  {'✅' if ok else '❌'} {nombre}: {obtenido!r}")
+    def check(name: str, got, expected) -> None:
+        ok = got == expected
+        print(f"  {'✅' if ok else '❌'} {name}: {got!r}")
         if not ok:
-            fallos.append(f"{nombre}: esperaba {esperado!r}, salió {obtenido!r}")
+            failures.append(f"{name}: expected {expected!r}, got {got!r}")
 
-    print("Formato de imagen (se detecta, ya no va 'jpeg' fijo):")
+    print("Image format (sniffed, no longer hardcoded to 'jpeg'):")
     png = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\x00" * 40).decode()
     jpg = base64.b64encode(b"\xff\xd8\xff\xe0" + b"\x00" * 40).decode()
     webp = base64.b64encode(b"RIFF\x00\x00\x00\x00WEBPVP8 ").decode()
@@ -323,167 +325,167 @@ def selftest() -> int:
     check("JPEG", vision.sniff_mime(jpg), "image/jpeg")
     check("WEBP", vision.sniff_mime(webp), "image/webp")
     check("GIF", vision.sniff_mime(gif), "image/gif")
-    check("basura -> jpeg", vision.sniff_mime("!!!"), "image/jpeg")
+    check("garbage -> jpeg", vision.sniff_mime("!!!"), "image/jpeg")
 
-    print("\nMensajes de error (el bug del timeout con str(e) vacío):")
+    print("\nError messages (the timeout bug with an empty str(e)):")
     check(
-        "timeout sin mensaje",
+        "timeout with no message",
         vision.describe_error(httpx.ReadTimeout("")),
         "ReadTimeout",
     )
-    check("error normal", vision.describe_error(ValueError("roto")), "roto")
+    check("normal error", vision.describe_error(ValueError("broken")), "broken")
 
-    print("\nLectura del rato de espera en un 429:")
+    print("\nReading the wait time out of a 429:")
     r_groq = httpx.Response(
         429, text='{"error":{"message":"Please try again in 12m39.024s"}}'
     )
-    check("del texto", vision._segundos_de_espera(r_groq), 759.024)
+    check("from the text", vision._seconds_to_wait(r_groq), 759.024)
     check(
-        "de la cabecera",
-        vision._segundos_de_espera(httpx.Response(429, headers={"retry-after": "30"}, text="x")),
+        "from the header",
+        vision._seconds_to_wait(httpx.Response(429, headers={"retry-after": "30"}, text="x")),
         30.0,
     )
 
-    print("\nEstimación de tokens por imagen (Groq cobra por píxeles):")
+    print("\nToken estimate per image (Groq charges by pixels):")
     for w, h in ((672, 896), (3024, 4032)):
-        print(f"  {w}x{h}: ~{tokens_estimados(w, h):,} tokens")
+        print(f"  {w}x{h}: ~{estimated_tokens(w, h):,} tokens")
 
-    if fallos:
-        print(f"\n❌ {len(fallos)} fallo(s):")
-        for f in fallos:
+    if failures:
+        print(f"\n❌ {len(failures)} failure(s):")
+        for f in failures:
             print(f"   - {f}")
         return 1
-    print("\n✅ Todo correcto (0 tokens gastados)")
+    print("\n✅ All correct (0 tokens spent)")
     return 0
 
 
 # --------------------------------------------------------------------------
 def main() -> int:
     p = argparse.ArgumentParser(
-        description="Mide la latencia del backend. Por defecto NO gasta cuota.",
+        description="Measures backend latency. By default it does NOT spend quota.",
     )
-    p.add_argument("--image", help="Ruta de la imagen de prueba")
+    p.add_argument("--image", help="Path of the test image")
     p.add_argument("--mode", default="server", choices=["server", "ttft"])
-    p.add_argument("--repeat", type=int, default=1, help="Repeticiones (por defecto 1)")
-    p.add_argument("--prompt", help="Pregunta concreta en vez de la descripción")
-    p.add_argument("--sizes", default=",".join(str(t) for t in TAMANOS))
+    p.add_argument("--repeat", type=int, default=1, help="Repetitions (default 1)")
+    p.add_argument("--prompt", help="A specific question instead of the description")
+    p.add_argument("--sizes", default=",".join(str(t) for t in SIZES))
     p.add_argument("--only-small", action="store_true",
-                   help="Solo el tamaño más pequeño: lo más barato en cuota")
-    p.add_argument("--budget", type=int, default=PRESUPUESTO_POR_DEFECTO,
-                   help=f"Tope de tokens estimados (por defecto {PRESUPUESTO_POR_DEFECTO})")
+                   help="Only the smallest size: the cheapest in quota")
+    p.add_argument("--budget", type=int, default=DEFAULT_BUDGET,
+                   help=f"Cap on estimated tokens (default {DEFAULT_BUDGET})")
     p.add_argument("--yes", action="store_true",
-                   help="Confirma que puede gastar cuota. Sin esto solo enseña el plan.")
+                   help="Confirms it may spend quota. Without this it only shows the plan.")
     p.add_argument("--selftest", action="store_true",
-                   help="Comprueba el código sin llamar a nadie (0 tokens)")
+                   help="Checks the code without calling anyone (0 tokens)")
     args = p.parse_args()
 
     if args.selftest:
         return selftest()
 
     if not args.image:
-        print("Falta --image. Ejemplo:\n  python bench_latency.py --image foto.jpg --yes")
-        print("\nO comprueba el código sin gastar nada:\n  python bench_latency.py --selftest")
+        print("Missing --image. Example:\n  python scripts/bench_latency.py --image photo.jpg --yes")
+        print("\nOr check the code without spending anything:\n  python scripts/bench_latency.py --selftest")
         return 2
     if not os.path.isfile(args.image):
-        print(f"No encuentro la imagen: {args.image}")
+        print(f"Image not found: {args.image}")
         return 2
 
-    tamanos = tuple(int(s) for s in args.sizes.split(",") if s.strip())
-    vars_ = variantes(args.image, tamanos)
+    sizes = tuple(int(s) for s in args.sizes.split(",") if s.strip())
+    vars_ = variants(args.image, sizes)
     if args.only_small:
         vars_ = [min(vars_, key=lambda v: v["bytes"])]
 
-    # --- Plan y coste antes de gastar nada -------------------------------
-    print(f"\nPlan: modo {args.mode}, {args.repeat} repetición(es)")
-    print(f"{'imagen':<26} {'KB':>7} {'tokens/petición estimados':>28}")
+    # --- Plan and cost before spending anything --------------------------
+    print(f"\nPlan: mode {args.mode}, {args.repeat} repetition(s)")
+    print(f"{'image':<26} {'KB':>7} {'estimated tokens/request':>28}")
     print("-" * 64)
-    coste = 0
+    cost = 0
     for v in vars_:
-        est = tokens_estimados(v["ancho"], v["alto"])
-        coste += est * args.repeat
-        print(f"{v['nombre']:<26} {v['bytes']/1024:>7.0f} {'~' + f'{est:,}':>28}")
-    peticiones = len(vars_) * args.repeat
+        est = estimated_tokens(v["width"], v["height"])
+        cost += est * args.repeat
+        print(f"{v['name']:<26} {v['bytes']/1024:>7.0f} {'~' + f'{est:,}':>28}")
+    requests = len(vars_) * args.repeat
     print("-" * 64)
-    print(f"Total: {peticiones} petición(es), ~{coste:,} tokens de entrada estimados")
+    print(f"Total: {requests} request(s), ~{cost:,} estimated input tokens")
 
-    if coste > args.budget:
-        print(f"\n⛔ Pasa del presupuesto ({args.budget:,} tokens). Opciones:")
-        print("   --only-small          solo la imagen reducida")
-        print("   --sizes 896           un único tamaño")
-        print(f"   --budget {coste}   subir el tope a conciencia")
+    if cost > args.budget:
+        print(f"\n⛔ Over budget ({args.budget:,} tokens). Options:")
+        print("   --only-small          only the downscaled image")
+        print("   --sizes 896           a single size")
+        print(f"   --budget {cost}   raise the cap deliberately")
         return 1
     if not args.yes:
-        print("\nEnsayo: no se ha gastado nada. Añade --yes para medir de verdad.")
+        print("\nDry run: nothing was spent. Add --yes to measure for real.")
         return 0
 
-    # --- Medición --------------------------------------------------------
-    resultados: dict[str, list[dict]] = {}
-    parar = False
-    with httpx.Client(timeout=120.0) as cliente:
+    # --- Measurement -----------------------------------------------------
+    results: dict[str, list[dict]] = {}
+    stop = False
+    with httpx.Client(timeout=120.0) as client:
         for v in vars_:
-            if parar:
+            if stop:
                 break
-            nombre = v["nombre"]
-            resultados[nombre] = []
+            name = v["name"]
+            results[name] = []
             for i in range(args.repeat):
                 if args.mode == "ttft":
-                    r = medir_ttft(v)
+                    r = measure_ttft(v)
                 else:
-                    r = medir_servidor(cliente, v, args.prompt)
+                    r = measure_server(client, v, args.prompt)
                 if "error" in r:
-                    print(f"⚠️  {nombre}: {r['error']}")
-                    if r.get("parar"):
-                        print("   Cuota agotada: se para para no insistir.")
-                        parar = True
+                    print(f"⚠️  {name}: {r['error']}")
+                    if r.get("stop"):
+                        print("   Quota exhausted: stopping so we don't insist.")
+                        stop = True
                     break
-                resultados[nombre].append(r)
-                print(f"   {nombre} [{i+1}/{args.repeat}] ok")
+                results[name].append(r)
+                print(f"   {name} [{i+1}/{args.repeat}] ok")
 
-    # --- Resultados ------------------------------------------------------
-    utiles = {k: v for k, v in resultados.items() if v}
-    if not utiles:
-        print("\nSin mediciones válidas.")
+    # --- Results ---------------------------------------------------------
+    useful = {k: v for k, v in results.items() if v}
+    if not useful:
+        print("\nNo valid measurements.")
         return 1
 
-    def med(muestras: list[dict], campo: str) -> float:
-        vals = [m[campo] for m in muestras if campo in m]
+    def med(samples: list[dict], field: str) -> float:
+        vals = [m[field] for m in samples if field in m]
         return statistics.median(vals) if vals else 0.0
 
     print("\n" + "=" * 78)
     if args.mode == "ttft":
-        print("TIME TO FIRST TOKEN (medianas)")
-        print(f"{'imagen':<38} {'TTFT':>10} {'total':>10} {'trozos':>8}")
+        print("TIME TO FIRST TOKEN (medians)")
+        print(f"{'image':<38} {'TTFT':>10} {'total':>10} {'chunks':>8}")
         print("-" * 78)
-        for nombre, ms in utiles.items():
-            print(f"{nombre:<38} {med(ms,'ttft_ms'):>9.0f}ms "
-                  f"{med(ms,'total_ms'):>9.0f}ms {med(ms,'trozos'):>8.0f}")
+        for name, ms in useful.items():
+            print(f"{name:<38} {med(ms,'ttft_ms'):>9.0f}ms "
+                  f"{med(ms,'total_ms'):>9.0f}ms {med(ms,'chunks'):>8.0f}")
         print("-" * 78)
-        peor = max(utiles.items(), key=lambda kv: med(kv[1], "total_ms"))
-        ahorro = med(peor[1], "total_ms") - med(peor[1], "ttft_ms")
-        print(f"\nMandando el texto al TTS en cuanto llega el primer token se "
-              f"adelantarían\nhasta ~{ahorro:.0f} ms en {peor[0]}.")
+        worst = max(useful.items(), key=lambda kv: med(kv[1], "total_ms"))
+        saving = med(worst[1], "total_ms") - med(worst[1], "ttft_ms")
+        print(f"\nFeeding the TTS as soon as the first token arrives would gain\n"
+              f"up to ~{saving:.0f} ms on {worst[0]}.")
     else:
-        print("LATENCIA POR PARTES (medianas)")
-        print(f"{'imagen':<34} {'reducir':>9} {'visión':>9} "
-              f"{'audio':>9} {'1er byte':>10} {'KB':>7}")
+        print("LATENCY BREAKDOWN (medians)")
+        print(f"{'image':<34} {'resize':>9} {'vision':>9} "
+              f"{'audio':>9} {'1st byte':>10} {'KB':>7}")
         print("-" * 82)
-        for nombre, ms in utiles.items():
-            print(f"{nombre:<34} {med(ms,'reducir_ms'):>8.0f}ms "
+        for name, ms in useful.items():
+            print(f"{name:<34} {med(ms,'resize_ms'):>8.0f}ms "
                   f"{med(ms,'vision_ms'):>8.0f}ms {med(ms,'audio_ms'):>8.0f}ms "
-                  f"{med(ms,'primer_audio_ms'):>9.0f}ms {med(ms,'bytes')/1024:>7.0f}")
+                  f"{med(ms,'first_audio_ms'):>9.0f}ms {med(ms,'bytes')/1024:>7.0f}")
         print("-" * 82)
-        mejor = min(utiles.items(), key=lambda kv: med(kv[1], "primer_audio_ms"))
-        print(f"\nMás rápido al primer byte de audio: {mejor[0]} "
-              f"({med(mejor[1],'primer_audio_ms'):.0f} ms)")
+        best = min(useful.items(), key=lambda kv: med(kv[1], "first_audio_ms"))
+        print(f"\nFastest to the first audio byte: {best[0]} "
+              f"({med(best[1],'first_audio_ms'):.0f} ms)")
         for v in vars_:
             if v["resize_ms"]:
-                print(f"Reducir a {v['nombre']}: {v['resize_ms']:.0f} ms de CPU "
-                      f"(+{v['encode_ms']:.0f} ms de base64)")
+                print(f"Resize to {v['name']}: {v['resize_ms']:.0f} ms of CPU "
+                      f"(+{v['encode_ms']:.0f} ms of base64)")
 
-    print("\nTextos devueltos:")
-    for nombre, ms in utiles.items():
-        if ms and ms[0].get("texto"):
-            print(f"  [{nombre}] {ms[0]['texto'][:150]}")
+    print("\nReturned texts:")
+    for name, ms in useful.items():
+        if ms and ms[0].get("text"):
+            print(f"  [{name}] {ms[0]['text'][:150]}")
     return 0
 
 

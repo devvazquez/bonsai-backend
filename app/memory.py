@@ -1,7 +1,7 @@
-"""Memoria persistente por dispositivo, en SQLite.
+"""Per-device persistent memory, in SQLite.
 
-Se usa SQLite en vez de un servicio externo (Redis, etc.) para no depender de
-nada más: el fichero vive en el volumen persistente del contenedor.
+SQLite instead of an external service (Redis, etc.) to avoid depending on
+anything else: the file lives in the container's persistent volume.
 """
 
 from __future__ import annotations
@@ -12,10 +12,9 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-# Dónde vive la base de datos:
-#   1. BONSAI_DB_PATH, si se define (tiene prioridad sobre todo lo demás).
-#   2. /data, el volumen persistente del contenedor (así es en la VPS).
-#   3. ./data, junto al código (así es al ejecutarlo en local, en cualquier SO).
+
+# Order matters: BONSAI_DB_PATH wins, then /data (the VPS volume), then ./data
+# next to the code (local runs, any OS).
 def _default_db_path() -> str:
     if os.path.isdir("/data"):
         return "/data/bonsai.db"
@@ -26,18 +25,17 @@ def _default_db_path() -> str:
 
 DB_PATH = os.environ.get("BONSAI_DB_PATH") or _default_db_path()
 
-MAX_ITEMS = 50  # límite por dispositivo, para no saturar el prompt
+MAX_ITEMS = 50  # per-device cap, so the prompt does not blow up
 
-# Las fotos de /ask se guardan junto a la base de datos, no dentro: una
-# columna BLOB por foto haría crecer el fichero hasta hacer lento cualquier
-# SELECT, y en la tabla solo hace falta la ruta.
-CAPTURAS_DIR = os.environ.get("BONSAI_CAPTURES_DIR") or os.path.join(
+# Photos live next to the database, not inside it: a BLOB column per photo
+# would grow the file until any SELECT got slow, and the table only needs the path.
+CAPTURES_DIR = os.environ.get("BONSAI_CAPTURES_DIR") or os.path.join(
     os.path.dirname(os.path.abspath(DB_PATH)), "captures"
 )
 
-# Cuántas conversaciones se conservan por dispositivo. Al pasarse se borran
-# las más viejas y también su fichero: si no, el disco crece para siempre.
-MAX_CAPTURAS = int(os.environ.get("BONSAI_MAX_CAPTURES", "100"))
+# Conversations kept per device. Beyond this the oldest rows and their files are
+# deleted, otherwise the disk grows forever.
+MAX_CAPTURES = int(os.environ.get("BONSAI_MAX_CAPTURES", "100"))
 
 
 def _connect() -> sqlite3.Connection:
@@ -61,9 +59,8 @@ def init_db() -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_device ON memories(device_id)"
         )
-        # Lo que ha pasado en cada /ask: la foto que se guardó, lo que se dijo
-        # y lo que contestaron las gafas. Sirve para depurar sin tener que
-        # reproducir la escena, y se ve en /admin como una tabla más.
+        # What happened in each /ask: photo, what was said and what was answered.
+        # Lets you debug without reproducing the scene; shows up in /admin.
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS captures (
@@ -109,7 +106,7 @@ def add_memory(device_id: str, fact: str) -> dict[str, Any]:
             "VALUES (?, ?, ?, ?)",
             (item["id"], device_id, item["fact"], item["created_at"]),
         )
-        # Conserva solo los MAX_ITEMS más recientes de este dispositivo.
+        # Keep only the MAX_ITEMS most recent ones for this device.
         conn.execute(
             """
             DELETE FROM memories
@@ -127,7 +124,7 @@ def add_memory(device_id: str, fact: str) -> dict[str, Any]:
 
 def delete_memory(device_id: str, memory_id: str) -> bool:
     with _connect() as conn:
-        # Permite pasar solo el prefijo del id, por comodidad.
+        # LIKE so an id prefix is enough, for convenience.
         cur = conn.execute(
             "DELETE FROM memories WHERE device_id = ? AND id LIKE ?",
             (device_id, f"{memory_id}%"),
@@ -136,7 +133,7 @@ def delete_memory(device_id: str, memory_id: str) -> bool:
 
 
 def update_memory(device_id: str, memory_id: str, fact: str) -> dict[str, Any] | None:
-    """Corrige el texto de un recuerdo. Devuelve None si no existe."""
+    """Fixes the text of a memory. Returns None if it does not exist."""
     with _connect() as conn:
         cur = conn.execute(
             "UPDATE memories SET fact = ? WHERE device_id = ? AND id LIKE ?",
@@ -153,10 +150,9 @@ def update_memory(device_id: str, memory_id: str, fact: str) -> dict[str, Any] |
 
 
 def list_devices() -> list[dict[str, Any]]:
-    """Todos los dispositivos que tienen recuerdos, con cuántos y de cuándo.
+    """Every device that has memories, with how many and from when.
 
-    Hace falta para poder mirar la base de datos sin saberte de memoria los
-    deviceId: hasta ahora había que adivinarlos.
+    Needed to browse the database without knowing the deviceIds by heart.
     """
     with _connect() as conn:
         rows = conn.execute(
@@ -174,48 +170,48 @@ def stats() -> dict[str, Any]:
             "SELECT COUNT(DISTINCT device_id) FROM memories"
         ).fetchone()[0]
     try:
-        tamano = os.path.getsize(DB_PATH)
+        size = os.path.getsize(DB_PATH)
     except OSError:
-        tamano = 0
+        size = 0
     return {
         "memories": total,
         "devices": devices,
         "dbPath": DB_PATH,
-        "dbBytes": tamano,
+        "dbBytes": size,
         "maxPerDevice": MAX_ITEMS,
     }
 
 
 def clear_device(device_id: str) -> int:
-    """Borra todos los recuerdos de un dispositivo. Devuelve cuántos eran."""
+    """Deletes every memory of a device. Returns how many there were."""
     with _connect() as conn:
         cur = conn.execute("DELETE FROM memories WHERE device_id = ?", (device_id,))
     return cur.rowcount
 
 
 # --------------------------------------------------------------------------
-# Fotos y conversaciones de /ask
+# Photos and conversations from /ask
 # --------------------------------------------------------------------------
-def _nombre_seguro(device_id: str) -> str:
-    """Un deviceId llega por la red y acaba siendo un nombre de carpeta.
+def _safe_name(device_id: str) -> str:
+    """A deviceId arrives over the network and ends up as a folder name.
 
-    Sin esto, un deviceId como "../../etc" escribiría fuera del directorio.
+    Without this, a deviceId like "../../etc" would write outside the directory.
     """
-    limpio = "".join(c if c.isalnum() or c in "-_" else "-" for c in device_id)
-    return limpio[:64] or "desconegut"
+    clean = "".join(c if c.isalnum() or c in "-_" else "-" for c in device_id)
+    return clean[:64] or "desconegut"
 
 
 def save_capture(device_id: str, image: bytes) -> tuple[str, str]:
-    """Guarda la foto en disco y devuelve (id, ruta).
+    """Stores the photo on disk and returns (id, path).
 
-    Se guarda en cuanto llega, antes de transcribir ni describir nada: si algo
-    falla después, la foto sigue ahí para poder ver qué estaba mirando.
+    Written as soon as it arrives, before transcribing or describing anything:
+    if something fails later, the photo is still there to look at.
     """
     capture_id = str(uuid.uuid4())
-    carpeta = os.path.join(CAPTURAS_DIR, _nombre_seguro(device_id))
-    os.makedirs(carpeta, exist_ok=True)
-    ruta = os.path.join(carpeta, f"{capture_id}.jpg")
-    with open(ruta, "wb") as f:
+    folder = os.path.join(CAPTURES_DIR, _safe_name(device_id))
+    os.makedirs(folder, exist_ok=True)
+    path = os.path.join(folder, f"{capture_id}.jpg")
+    with open(path, "wb") as f:
         f.write(image)
 
     with _connect() as conn:
@@ -223,46 +219,46 @@ def save_capture(device_id: str, image: bytes) -> tuple[str, str]:
             "INSERT INTO captures (id, device_id, created_at, image_path, "
             "image_bytes) VALUES (?, ?, ?, ?, ?)",
             (capture_id, device_id, datetime.now(timezone.utc).isoformat(),
-             ruta, len(image)),
+             path, len(image)),
         )
-    return capture_id, ruta
+    return capture_id, path
 
 
-def finish_capture(capture_id: str, **campos: Any) -> None:
-    """Rellena la fila cuando ya se sabe qué se dijo y qué se contestó.
+def finish_capture(capture_id: str, **fields: Any) -> None:
+    """Fills in the row once we know what was said and what was answered.
 
-    Los nombres de columna son de esta lista y no de lo que llegue: van dentro
-    del SQL porque una columna no puede ser un parámetro.
+    Column names come from this allowlist and not from the caller: they go
+    inside the SQL because a column cannot be a bound parameter.
     """
-    permitidos = ("audio_secs", "transcript", "reply", "stt_ms", "vision_ms",
-                  "total_ms")
-    pares = [(k, v) for k, v in campos.items() if k in permitidos]
-    if not pares:
+    allowed = ("audio_secs", "transcript", "reply", "stt_ms", "vision_ms",
+               "total_ms")
+    pairs = [(k, v) for k, v in fields.items() if k in allowed]
+    if not pairs:
         return
-    sets = ", ".join(f"{k} = ?" for k, _ in pares)
+    sets = ", ".join(f"{k} = ?" for k, _ in pairs)
     with _connect() as conn:
         conn.execute(
             f"UPDATE captures SET {sets} WHERE id = ?",
-            [v for _, v in pares] + [capture_id],
+            [v for _, v in pairs] + [capture_id],
         )
 
 
 def prune_captures(device_id: str) -> int:
-    """Deja solo las MAX_CAPTURAS últimas de este dispositivo, ficheros incluidos."""
+    """Keeps only the last MAX_CAPTURES of this device, files included."""
     with _connect() as conn:
-        viejas = conn.execute(
+        old = conn.execute(
             "SELECT id, image_path FROM captures WHERE device_id = ? "
             "ORDER BY created_at DESC LIMIT -1 OFFSET ?",
-            (device_id, MAX_CAPTURAS),
+            (device_id, MAX_CAPTURES),
         ).fetchall()
-        for fila in viejas:
+        for row in old:
             try:
-                os.remove(fila["image_path"])
+                os.remove(row["image_path"])
             except OSError:
-                # El fichero ya no está o no se puede borrar: la fila sí se va.
+                # File already gone or undeletable: the row goes away anyway.
                 pass
-            conn.execute("DELETE FROM captures WHERE id = ?", (fila["id"],))
-    return len(viejas)
+            conn.execute("DELETE FROM captures WHERE id = ?", (row["id"],))
+    return len(old)
 
 
 def get_capture(capture_id: str) -> dict[str, Any] | None:
@@ -287,7 +283,7 @@ def list_captures(device_id: str | None = None, limit: int = 50) -> list[dict[st
 
 
 def get_memory_context(device_id: str) -> str:
-    """Devuelve los recuerdos en texto plano para inyectar en el system prompt."""
+    """Returns the memories as plain text, to inject into the system prompt."""
     items = list_memories(device_id)
     if not items:
         return ""

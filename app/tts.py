@@ -1,12 +1,10 @@
-"""Texto a voz con Piper, en local y sin red.
+"""Text to speech with Piper, local and offline.
 
-Es el único proveedor de TTS. Hubo edge-tts (voces de Microsoft) y se quitó:
-medido con la misma frase catalana, Piper son 205 ms de mediana (182-422)
-frente a 1.320 ms (949-2.089) de edge-tts con texto nuevo. Son 6,4 veces, y
-sobre todo es **predecible**: no hay red, ni cola larga, ni un servicio ajeno
-del que depender.
+It is the only TTS provider. edge-tts (Microsoft voices) was dropped: on the
+same Catalan sentence Piper is 205 ms median (182-422) against 1,320 ms
+(949-2,089), and above all it is predictable — no network, no long tail.
 
-Las voces catalanas son de la UPC, publicadas en el repositorio de Piper.
+The Catalan voices are the UPC ones published in the Piper repository.
 """
 
 from __future__ import annotations
@@ -24,19 +22,15 @@ VOICES_DIR = os.environ.get(
 )
 
 # ==========================================================================
-# La voz de cada idioma. ESTO es lo que se toca para cambiar una voz.
+# The voice of each language. THIS is what you edit to change a voice.
 # ==========================================================================
-# Una entrada por idioma y nada más: quien llama a la API pide un idioma
-# (`lang`) y aquí se decide con qué voz se le contesta. Si la voz que se pone
-# no está en disco, se baja sola la primera vez que hace falta.
+# Names come from the Piper repository (rhasspy/piper-voices) and follow the
+# `<locale>-<speaker>-<quality>` pattern; the download path is derived from the
+# name (see `_hf_path`), so writing another name here is the whole change.
 #
-# Los nombres son los del repositorio de Piper (rhasspy/piper-voices) y siguen
-# el patrón `<locale>-<locutor>-<calidad>`. Para cambiar de voz basta con
-# escribir otro nombre de ahí: la ruta de descarga se deduce (ver `_ruta_hf`).
-#
-# En catalán solo hay tres voces, comprobado a mano contra el repositorio:
-# upc_ona-medium (la de aquí), upc_ona-x_low y upc_pau-x_low (masculina, más
-# rápida: 145 ms frente a 215, pero a 16 kHz y se nota).
+# Catalan only has three voices, checked by hand against the repository:
+# upc_ona-medium (this one), upc_ona-x_low and upc_pau-x_low (male, faster:
+# 145 ms vs 215, but 16 kHz and you can hear it).
 VOICES = {
     "ca": "ca_ES-upc_ona-medium",
     "es": "es_ES-davefx-medium",
@@ -47,27 +41,27 @@ DEFAULT_LANG = "ca"
 
 BASE_URL = "https://huggingface.co/rhasspy/piper-voices/resolve/main"
 
-# Cargar el modelo cuesta ~1,2 s, así que se hace una vez y se guarda. La
-# síntesis en sí son ~205 ms.
-_cargadas: dict[str, object] = {}
+# Loading the model costs ~1.2 s, so it is done once and kept. The synthesis
+# itself is ~205 ms.
+_loaded: dict[str, object] = {}
 
 
-class PiperNoDisponible(RuntimeError):
-    """Falta el modelo o la librería: sin esto las gafas se quedan mudas."""
+class PiperUnavailable(RuntimeError):
+    """Missing model or library: without this the glasses go mute."""
 
 
-# Si Piper falla al arrancar se anota aquí y /health lo dice: un fallo
-# silencioso es peor que uno visible.
-_fallo: str | None = None
+# If Piper fails to start it is noted here and /health says so: a silent
+# failure is worse than a visible one.
+_failure: str | None = None
 
 
-def idiomas() -> list[str]:
-    """Los idiomas que hay definidos arriba."""
+def languages() -> list[str]:
+    """The languages defined above."""
     return sorted(VOICES)
 
 
 def voice_for(lang: str | None) -> str:
-    """La voz del idioma. Un idioma que no esté definido cae al de por defecto."""
+    """The voice for a language. An undefined language falls back to the default."""
     return VOICES.get((lang or DEFAULT_LANG).lower(), VOICES[DEFAULT_LANG])
 
 
@@ -80,7 +74,7 @@ def is_available(voice: str) -> bool:
 
 
 def local_voices() -> list[str]:
-    """Las que ya están bajadas. Solo para que /health lo pueda decir."""
+    """The ones already downloaded. Only so /health can report them."""
     if not os.path.isdir(VOICES_DIR):
         return []
     return sorted(
@@ -88,259 +82,246 @@ def local_voices() -> list[str]:
     )
 
 
-def _ruta_hf(voice: str) -> str:
-    """Dónde vive la voz dentro del repositorio, deducido de su nombre.
+def _hf_path(voice: str) -> str:
+    """Where the voice lives in the repository, derived from its name.
 
-    `ca_ES-upc_ona-medium` -> `ca/ca_ES/upc_ona/medium`. El idioma aparece dos
-    veces (suelto y con región) y la calidad va aparte, pero todo sale del
-    propio nombre, así que no hay que mantener una tabla de rutas al lado del
-    mapa de idiomas: cambiar la voz de un idioma es escribir otro nombre.
-
-    El locutor puede llevar guiones (`en_US-libritts_r-medium` no, pero alguno
-    sí), así que se parte por el primer y el último guion, no por todos.
+    `ca_ES-upc_ona-medium` -> `ca/ca_ES/upc_ona/medium`. Everything comes from
+    the name itself, so there is no path table to keep in sync with VOICES.
+    The speaker may contain dashes, hence first/last partition, not split.
     """
-    primero, _, resto = voice.partition("-")
-    locutor, _, calidad = resto.rpartition("-")
-    if not primero or not locutor or not calidad:
-        raise PiperNoDisponible(
-            f"El nombre {voice!r} no tiene la forma <locale>-<locutor>-<calidad> "
-            "que usa el repositorio de Piper, así que no sé de dónde bajarlo. "
-            f"Déjalo a mano en {VOICES_DIR}."
+    first, _, rest = voice.partition("-")
+    speaker, _, quality = rest.rpartition("-")
+    if not first or not speaker or not quality:
+        raise PiperUnavailable(
+            f"The name {voice!r} is not in the <locale>-<speaker>-<quality> form "
+            "used by the Piper repository, so there is no way to know where to "
+            f"download it from. Drop it by hand in {VOICES_DIR}."
         )
-    idioma = primero.split("_")[0]
-    return f"{idioma}/{primero}/{locutor}/{calidad}"
+    language = first.split("_")[0]
+    return f"{language}/{first}/{speaker}/{quality}"
 
 
-# Una descarga por voz: si llegan dos peticiones a la vez del mismo idioma que
-# todavía no está bajado, la segunda espera a la primera en vez de bajar otros
-# 63 MB en paralelo.
-_candados: dict[str, asyncio.Lock] = {}
+# One download per voice: two simultaneous requests for the same missing
+# language must not fetch 63 MB twice in parallel.
+_locks: dict[str, asyncio.Lock] = {}
 
 
 async def ensure_voice(voice: str, timeout: float = 300.0) -> str:
-    """Se asegura de que la voz esté en disco, bajándola si hace falta.
+    """Makes sure the voice is on disk, downloading it if needed.
 
-    Son ~63 MB y se hace una sola vez por voz. La de por defecto se baja al
-    arrancar (`tts.warmup`), así que esto solo se nota la primera vez que se
-    pide un idioma nuevo.
+    ~63 MB, once per voice. The default one is fetched at startup
+    (`tts.warmup`), so this only shows up on a brand new language.
     """
     if is_available(voice):
         return voice_path(voice)
 
-    candado = _candados.setdefault(voice, asyncio.Lock())
-    async with candado:
-        # Otra petición puede haberla bajado mientras se esperaba el candado.
+    lock = _locks.setdefault(voice, asyncio.Lock())
+    async with lock:
+        # Another request may have downloaded it while waiting for the lock.
         if is_available(voice):
             return voice_path(voice)
 
-        ruta = _ruta_hf(voice)
+        path = _hf_path(voice)
 
-        from . import vision  # reutiliza el cliente HTTP compartido
+        from . import vision  # reuses the shared HTTP client
 
         os.makedirs(VOICES_DIR, exist_ok=True)
-        cliente = vision.get_client()
+        client = vision.get_client()
         for ext in ("onnx", "onnx.json"):
-            destino = os.path.join(VOICES_DIR, f"{voice}.{ext}")
-            if os.path.isfile(destino):
+            target = os.path.join(VOICES_DIR, f"{voice}.{ext}")
+            if os.path.isfile(target):
                 continue
-            url = f"{BASE_URL}/{ruta}/{voice}.{ext}"
-            r = await cliente.get(url, timeout=timeout, follow_redirects=True)
+            url = f"{BASE_URL}/{path}/{voice}.{ext}"
+            r = await client.get(url, timeout=timeout, follow_redirects=True)
             if r.status_code >= 400:
-                raise PiperNoDisponible(
-                    f"No se pudo bajar {url} (HTTP {r.status_code}). Si la voz "
-                    "está mal escrita, el repositorio devuelve 404: mira el "
-                    "nombre en tts.VOICES."
+                raise PiperUnavailable(
+                    f"Could not download {url} (HTTP {r.status_code}). A "
+                    "misspelled voice makes the repository return 404: check "
+                    "the name in tts.VOICES."
                 )
-            # El modelo son decenas de MB y el .json unos cuantos KB: cualquier
-            # cosa diminuta es una respuesta que no es la que se pedía, y
-            # guardarla da un KeyError críptico al cargarla.
+            # The model is tens of MB and the .json a few KB: anything tiny is
+            # not the file we asked for, and saving it gives a cryptic
+            # KeyError at load time.
             if len(r.content) < 1024:
-                raise PiperNoDisponible(
-                    f"{url} devolvió solo {len(r.content)} bytes, que no es un "
-                    f"{ext} de verdad: {r.content[:120]!r}"
+                raise PiperUnavailable(
+                    f"{url} returned only {len(r.content)} bytes, which is not a "
+                    f"real {ext}: {r.content[:120]!r}"
                 )
-            # A un fichero temporal primero: si se corta la descarga, no queda
-            # un .onnx a medias que luego falle al cargar.
-            tmp = destino + ".parcial"
+            # Temporary file first: an interrupted download must not leave a
+            # half-written .onnx that fails to load later.
+            tmp = target + ".partial"
             with open(tmp, "wb") as f:
                 f.write(r.content)
-            os.replace(tmp, destino)
+            os.replace(tmp, target)
         return voice_path(voice)
 
 
-def _voz_cargada(voice: str):
-    if voice in _cargadas:
-        return _cargadas[voice]
+def _loaded_voice(voice: str):
+    if voice in _loaded:
+        return _loaded[voice]
 
-    ruta = voice_path(voice)
-    if not os.path.isfile(ruta):
-        # No debería pasar: se llama después de ensure_voice(), que la baja.
-        raise PiperNoDisponible(
-            f"Falta el modelo {ruta} y no se ha bajado antes de sintetizar."
+    path = voice_path(voice)
+    if not os.path.isfile(path):
+        # Should not happen: this is called after ensure_voice(), which fetches it.
+        raise PiperUnavailable(
+            f"Model {path} is missing and was not downloaded before synthesizing."
         )
     try:
         from piper import PiperVoice
     except ImportError as e:
-        raise PiperNoDisponible(
-            "Falta la librería piper-tts (pip install piper-tts)."
+        raise PiperUnavailable(
+            "The piper-tts library is missing (pip install piper-tts)."
         ) from e
 
-    _cargadas[voice] = PiperVoice.load(ruta)
-    return _cargadas[voice]
+    _loaded[voice] = PiperVoice.load(path)
+    return _loaded[voice]
 
 
-def _sintetizar_wav(text: str, voice: str) -> bytes:
-    """Devuelve un WAV completo. Se ejecuta fuera del bucle de eventos."""
-    voz = _voz_cargada(voice)
-    trozos = list(voz.synthesize(text))
-    if not trozos:
-        raise RuntimeError("Piper no devolvió audio.")
-    pcm = b"".join(c.audio_int16_bytes for c in trozos)
+def _synthesize_wav(text: str, voice: str) -> bytes:
+    """Returns a complete WAV. Runs outside the event loop."""
+    v = _loaded_voice(voice)
+    chunks = list(v.synthesize(text))
+    if not chunks:
+        raise RuntimeError("Piper returned no audio.")
+    pcm = b"".join(c.audio_int16_bytes for c in chunks)
     buf = io.BytesIO()
     with wave.open(buf, "wb") as w:
-        w.setnchannels(trozos[0].sample_channels)
-        w.setsampwidth(trozos[0].sample_width)
-        w.setframerate(trozos[0].sample_rate)
+        w.setnchannels(chunks[0].sample_channels)
+        w.setsampwidth(chunks[0].sample_width)
+        w.setframerate(chunks[0].sample_rate)
         w.writeframes(pcm)
     return buf.getvalue()
 
 
 async def synthesize(text: str, voice: str) -> bytes:
-    """WAV completo en memoria.
+    """Complete WAV in memory.
 
-    Piper es síncrono y consume CPU, así que va a un hilo: si no, bloquearía
-    el bucle de eventos y las peticiones en paralelo se pondrían en cola.
+    Piper is synchronous and CPU bound, so it goes to a thread: otherwise it
+    would block the event loop and queue up concurrent requests.
     """
-    return await asyncio.to_thread(_sintetizar_wav, text, voice)
+    return await asyncio.to_thread(_synthesize_wav, text, voice)
 
 
 async def stream(text: str, voice: str) -> AsyncIterator[bytes]:
-    """Un solo trozo: trocearlo no aportaría nada, la síntesis son ~205 ms."""
+    """A single chunk: splitting would gain nothing, synthesis is ~205 ms."""
     yield await synthesize(text, voice)
 
 
 # --------------------------------------------------------------------------
-# Audio en crudo para el ESP32
+# Raw audio for the ESP32
 # --------------------------------------------------------------------------
-# El MAX98357A es un amplificador I2S: lo que quiere son muestras PCM de 16
-# bits con signo. Cualquier otra cosa (WAV con cabecera, MP3) obliga al
-# microcontrolador a trabajar de más antes de poder sonar.
-FORMATOS = ("pcm16", "mulaw", "wav")
+# The MAX98357A is an I2S amplifier: it wants signed 16-bit PCM samples.
+# Anything else (WAV header, MP3) makes the microcontroller work before sounding.
+FORMATS = ("pcm16", "mulaw", "wav")
 
-# 22.050 Hz es lo que saca el modelo, así que no hay que remuestrear nada.
-# 16.000 baja el ancho de banda un 27 % y para voz se nota poco. El
-# MAX98357A acepta de 8 a 96 kHz.
+# 22,050 Hz is what the model outputs, so nothing is resampled. 16,000 cuts
+# bandwidth by 27 % and is barely audible for speech. The MAX98357A takes
+# 8 to 96 kHz.
 SAMPLE_RATES = (8000, 16000, 22050)
 
 
-def _remuestrear(muestras, origen: int, destino: int):
-    """Remuestreo lineal. De sobra para voz, y son microsegundos con numpy."""
+def _resample(samples, source: int, target: int):
+    """Linear resampling. Plenty for speech, and microseconds with numpy."""
     import numpy as np
 
-    if origen == destino:
-        return muestras
-    n = int(len(muestras) * destino / origen)
+    if source == target:
+        return samples
+    n = int(len(samples) * target / source)
     if n <= 0:
-        return muestras[:0]
-    x = np.linspace(0, len(muestras) - 1, n)
-    return np.interp(x, np.arange(len(muestras)), muestras).astype(np.int16)
+        return samples[:0]
+    x = np.linspace(0, len(samples) - 1, n)
+    return np.interp(x, np.arange(len(samples)), samples).astype(np.int16)
 
 
-def _a_mulaw(muestras):
-    """PCM16 -> mu-law de 8 bits (G.711).
+def _to_mulaw(samples):
+    """PCM16 -> 8-bit mu-law (G.711).
 
-    Se descodifica en el ESP32 con una tabla de 256 entradas, sin librería ni
-    apenas CPU, y ocupa la mitad. Útil si el WiFi va justo.
+    Decoded on the ESP32 with a 256-entry table, no library and barely any
+    CPU, at half the size. Useful when the WiFi is tight.
     """
     import numpy as np
 
     BIAS, CLIP = 0x84, 32635
-    x = np.clip(muestras.astype(np.int32), -CLIP, CLIP)
-    signo = (x < 0).astype(np.uint8) * 0x80
+    x = np.clip(samples.astype(np.int32), -CLIP, CLIP)
+    sign = (x < 0).astype(np.uint8) * 0x80
     x = np.abs(x) + BIAS
-    exponente = np.zeros_like(x, dtype=np.uint8)
+    exponent = np.zeros_like(x, dtype=np.uint8)
     for e in range(7, 0, -1):
-        exponente = np.where((exponente == 0) & (x >= (1 << (e + 7))), e, exponente)
-    mantisa = ((x >> (exponente.astype(np.int32) + 3)) & 0x0F).astype(np.uint8)
-    return (~(signo | (exponente << 4) | mantisa)).astype(np.uint8).tobytes()
+        exponent = np.where((exponent == 0) & (x >= (1 << (e + 7))), e, exponent)
+    mantissa = ((x >> (exponent.astype(np.int32) + 3)) & 0x0F).astype(np.uint8)
+    return (~(sign | (exponent << 4) | mantissa)).astype(np.uint8).tobytes()
 
 
-def convertir(chunk, formato: str, rate: int | None) -> tuple[bytes, int]:
-    """Pasa un trozo de Piper al formato pedido. Devuelve (bytes, sample_rate)."""
+def convert(chunk, fmt: str, rate: int | None) -> tuple[bytes, int]:
+    """Turns a Piper chunk into the requested format. Returns (bytes, sample_rate)."""
     import numpy as np
 
-    muestras = np.frombuffer(chunk.audio_int16_bytes, dtype=np.int16)
-    destino = rate or chunk.sample_rate
-    muestras = _remuestrear(muestras, chunk.sample_rate, destino)
-    if formato == "mulaw":
-        return _a_mulaw(muestras), destino
-    return muestras.astype("<i2").tobytes(), destino
+    samples = np.frombuffer(chunk.audio_int16_bytes, dtype=np.int16)
+    target = rate or chunk.sample_rate
+    samples = _resample(samples, chunk.sample_rate, target)
+    if fmt == "mulaw":
+        return _to_mulaw(samples), target
+    return samples.astype("<i2").tobytes(), target
 
 
-def cabecera_wav(
-    sample_rate: int, bits: int = 16, datos_bytes: int | None = None
+def wav_header(
+    sample_rate: int, bits: int = 16, data_bytes: int | None = None
 ) -> bytes:
-    """Cabecera WAV. Con `datos_bytes`, con las longitudes de verdad.
+    """WAV header. With `data_bytes`, carrying the real lengths.
 
-    Sin `datos_bytes` se ponen 0xFFFFFFFF, que es lo único que se puede hacer
-    si se empieza a responder antes de saber cuánto audio habrá. Al ESP32 le da
-    igual (lee las muestras y punto), pero **un reproductor no**: no puede
-    calcular la duración, así que enseña 0:00 y no suena nada. Un `<audio>` del
-    navegador o el propio /docs se quedan así.
-
-    O sea que si el audio ya está entero en memoria, hay que pasar
-    `datos_bytes`. Es lo que hace `/speak` con `wav`.
+    Without `data_bytes` the lengths are 0xFFFFFFFF, the only option when
+    streaming before knowing the size. The ESP32 does not care, but a player
+    cannot compute the duration and shows 0:00 without sounding — so pass
+    `data_bytes` whenever the audio is already complete in memory (`/speak`
+    with `wav` does).
     """
     import struct
 
-    bloque = bits // 8
-    riff = 0xFFFFFFFF if datos_bytes is None else 36 + datos_bytes
-    datos = 0xFFFFFFFF if datos_bytes is None else datos_bytes
+    block = bits // 8
+    riff = 0xFFFFFFFF if data_bytes is None else 36 + data_bytes
+    data = 0xFFFFFFFF if data_bytes is None else data_bytes
     return (
         b"RIFF" + struct.pack("<I", riff) + b"WAVEfmt "
-        + struct.pack("<IHHIIHH", 16, 1, 1, sample_rate, sample_rate * bloque, bloque, bits)
-        + b"data" + struct.pack("<I", datos)
+        + struct.pack("<IHHIIHH", 16, 1, 1, sample_rate, sample_rate * block, block, bits)
+        + b"data" + struct.pack("<I", data)
     )
 
 
-def _trozos_sincronos(text: str, voice: str) -> Iterator:
-    return _voz_cargada(voice).synthesize(text)
+def _sync_chunks(text: str, voice: str) -> Iterator:
+    return _loaded_voice(voice).synthesize(text)
 
 
 async def stream_raw(
-    text: str, voice: str, formato: str = "pcm16", rate: int | None = None
+    text: str, voice: str, fmt: str = "pcm16", rate: int | None = None
 ) -> AsyncIterator[bytes]:
-    """Va soltando el audio a medida que Piper lo genera.
+    """Emits audio as Piper produces it.
 
-    Piper entrega un trozo por frase, así que con una respuesta de dos frases
-    el ESP32 puede empezar a sonar con la primera mientras se sintetiza la
-    segunda. Y como el audio se transmite más rápido que se escucha, a partir
-    del primer trozo la descarga deja de contar: se solapa con la reproducción.
-
-    Va en un hilo porque Piper es síncrono y bloquearía el bucle de eventos.
+    Piper yields one chunk per sentence, so the ESP32 can start playing the
+    first while the second is synthesized; from then on the download outruns
+    playback and stops counting. Runs in a thread because Piper is synchronous.
     """
-    if formato not in FORMATOS:
+    if fmt not in FORMATS:
         raise ValueError(
-            f"Formato de audio desconocido: {formato!r}. Usa uno de: {', '.join(FORMATOS)}"
+            f"Unknown audio format: {fmt!r}. Use one of: {', '.join(FORMATS)}"
         )
 
-    cola: asyncio.Queue = asyncio.Queue()
-    bucle = asyncio.get_running_loop()
+    queue: asyncio.Queue = asyncio.Queue()
+    loop = asyncio.get_running_loop()
 
-    def productor() -> None:
+    def producer() -> None:
         try:
-            for chunk in _trozos_sincronos(text, voice):
-                datos, _ = convertir(chunk, formato, rate)
-                bucle.call_soon_threadsafe(cola.put_nowait, datos)
-        except Exception as e:  # se re-lanza en el lado async
-            bucle.call_soon_threadsafe(cola.put_nowait, e)
+            for chunk in _sync_chunks(text, voice):
+                data, _ = convert(chunk, fmt, rate)
+                loop.call_soon_threadsafe(queue.put_nowait, data)
+        except Exception as e:  # re-raised on the async side
+            loop.call_soon_threadsafe(queue.put_nowait, e)
         finally:
-            bucle.call_soon_threadsafe(cola.put_nowait, None)
+            loop.call_soon_threadsafe(queue.put_nowait, None)
 
-    threading.Thread(target=productor, daemon=True).start()
+    threading.Thread(target=producer, daemon=True).start()
 
     while True:
-        item = await cola.get()
+        item = await queue.get()
         if item is None:
             return
         if isinstance(item, Exception):
@@ -348,7 +329,7 @@ async def stream_raw(
         yield item
 
 
-def sample_rate_de(voice: str, rate: int | None = None) -> int:
+def sample_rate_of(voice: str, rate: int | None = None) -> int:
     if rate:
         return rate
     with open(voice_path(voice) + ".json", encoding="utf-8") as f:
@@ -358,32 +339,32 @@ def sample_rate_de(voice: str, rate: int | None = None) -> int:
 
 
 def status() -> dict[str, object]:
-    """Lo que /health cuenta de Piper: si arrancó y qué voz tiene cada idioma."""
+    """What /health reports about Piper: whether it started and each language's voice."""
     return {
-        "ok": _fallo is None,
-        "error": _fallo,
+        "ok": _failure is None,
+        "error": _failure,
         "voicesDir": VOICES_DIR,
-        # Las que no estén en disco se bajan solas la primera vez que se pidan.
+        # Missing ones are downloaded on first use.
         "voices": {
-            lang: {"voice": voz, "downloaded": is_available(voz)}
-            for lang, voz in sorted(VOICES.items())
+            lang: {"voice": voice, "downloaded": is_available(voice)}
+            for lang, voice in sorted(VOICES.items())
         },
     }
 
 
 async def warmup(voice: str | None = None) -> bool:
-    """Baja el modelo si falta y lo carga, al arrancar el servidor.
+    """Downloads the model if missing and loads it, at server startup.
 
-    Así el ~1,2 s de carga no lo paga la primera foto. Si falla se apunta el
-    motivo en `_fallo`, que es lo que enseña /health.
+    That way the ~1.2 s load is not paid by the first photo. On failure the
+    reason is stored in `_failure`, which is what /health shows.
     """
-    global _fallo
+    global _failure
     v = voice or VOICES[DEFAULT_LANG]
     try:
         await ensure_voice(v)
-        await asyncio.to_thread(_voz_cargada, v)
-        _fallo = None
+        await asyncio.to_thread(_loaded_voice, v)
+        _failure = None
         return True
     except Exception as e:
-        _fallo = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
+        _failure = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
         return False

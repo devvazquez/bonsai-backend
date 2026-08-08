@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Terminal de pruebas para el backend de Bonsai.
+Manual test terminal for the Bonsai backend.
 
-Sin dependencias: usa solo la librería estándar de Python.
-(Ya no hace falta curl_cffi: ese truco era para esquivar el anti-bot del
-dominio compartido *.workers.dev, que ya no usamos.)
+No dependencies: standard library only.
+(curl_cffi is no longer needed: that trick was to dodge the anti-bot of the
+shared *.workers.dev domain, which we no longer use.)
 
-    python test_bonsai.py
+    python tests/smoke.py
 
-Comandos disponibles: escribe "help".
+Needs a server already running (see API_URL below). This is NOT an automated
+test: `describe` hits the vision provider and spends real Groq quota.
+
+Available commands: type "help".
 """
 
 from __future__ import annotations
@@ -23,21 +26,21 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-# La consola de Windows suele venir en cp1252, y ahí los emojis y los acentos
-# de más abajo revientan con UnicodeEncodeError. Forzamos UTF-8 en la salida.
+# The Windows console usually comes as cp1252, where the emoji below blow up
+# with UnicodeEncodeError. Force UTF-8 on the output.
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 # ---------------------------------------------------------------------------
-# Configuración (cámbiala aquí o con el comando "config" en marcha)
+# Configuration (change it here or with the "config" command while running)
 # ---------------------------------------------------------------------------
-API_URL = "http://127.0.0.1:8080"  # en producción: https://bonsai.tudominio.com
-# Prefijo de versión de la API. Se le pone a cada ruta en call(), así que las
-# rutas de aquí abajo siguen escribiéndose /look, /speak, /memory...
+API_URL = "http://127.0.0.1:8080"  # in production: https://bonsai.yourdomain.com
+# API version prefix. call() prepends it to every path, so the paths below are
+# still written as /look, /speak, /memory...
 API_PREFIX = "/api/v1"
 DEVICE_ID = "bonsai-01"
-LANG = "ca"  # 'ca' catalán, 'es' castellano, 'en' inglés
-API_TOKEN = ""  # el mismo BONSAI_API_TOKEN del servidor (vacío = sin auth)
+LANG = "ca"  # 'ca' Catalan, 'es' Spanish, 'en' English
+API_TOKEN = ""  # same BONSAI_API_TOKEN as the server (empty = no auth)
 TIMEOUT = 60
 
 
@@ -46,7 +49,7 @@ def ms(seconds: float) -> str:
 
 
 def call(path: str, method: str = "GET", body: dict | None = None, raw: bool = False):
-    """Devuelve (respuesta, segundos). respuesta es dict, bytes o None si falla."""
+    """Returns (response, seconds). response is dict, bytes or None on failure."""
     url = f"{API_URL}{API_PREFIX}{path}"
     data = json.dumps(body).encode() if body is not None else None
     headers = {"Content-Type": "application/json"}
@@ -64,12 +67,12 @@ def call(path: str, method: str = "GET", body: dict | None = None, raw: bool = F
         print(f"⚠️  HTTP {e.code} ({ms(elapsed)}): {e.read().decode('utf-8', 'ignore')[:400]}")
     except Exception as e:
         elapsed = time.perf_counter() - start
-        print(f"⚠️  Error de conexión ({ms(elapsed)}): {e}")
+        print(f"⚠️  Connection error ({ms(elapsed)}): {e}")
     return None, time.perf_counter() - start
 
 
 def play(path: str) -> None:
-    """Abre el audio con el reproductor por defecto (Windows/macOS/Linux)."""
+    """Opens the audio with the default player (Windows/macOS/Linux)."""
     try:
         os.startfile(path)  # type: ignore[attr-defined]  # Windows
     except AttributeError:
@@ -79,13 +82,13 @@ def play(path: str) -> None:
 
 
 def cmd_describe(args: list[str]) -> None:
-    """Manda una foto a /look y reproduce el audio que va llegando."""
+    """Sends a photo to /look and plays the audio as it arrives."""
     if not args:
-        print("Uso: describe <ruta_imagen> [pregunta opcional]")
+        print("Usage: describe <image_path> [optional prompt]")
         return
     path, prompt = args[0], " ".join(args[1:]) or None
     if not os.path.isfile(path):
-        print(f"No encuentro el archivo: {path}")
+        print(f"File not found: {path}")
         return
 
     t0 = time.perf_counter()
@@ -93,88 +96,88 @@ def cmd_describe(args: list[str]) -> None:
     img_b64 = base64.b64encode(img_bytes).decode()
     t_encode = time.perf_counter() - t0
 
-    # wav para poder reproducirlo aquí; el ESP32 pide pcm16 en crudo.
+    # wav so it can be played here; the ESP32 asks for raw pcm16.
     body = {"deviceId": DEVICE_ID, "image": img_b64, "lang": LANG,
             "audioFormat": "wav"}
     if prompt:
         body["prompt"] = prompt
 
-    print(f"📤 Enviando ({len(img_bytes)/1024:.1f} KB, codificada en {ms(t_encode)})...")
+    print(f"📤 Sending ({len(img_bytes)/1024:.1f} KB, encoded in {ms(t_encode)})...")
 
     req = urllib.request.Request(
         f"{API_URL}{API_PREFIX}/look", data=json.dumps(body).encode(), method="POST",
         headers={"Content-Type": "application/json",
                  **({"X-API-Token": API_TOKEN} if API_TOKEN else {})})
     t0 = time.perf_counter()
-    primero = None
-    trozos = []
+    first = None
+    chunks = []
     try:
         with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
-            cab = resp.headers
+            head = resp.headers
             while True:
-                trozo = resp.read(8192)
-                if not trozo:
+                chunk = resp.read(8192)
+                if not chunk:
                     break
-                if primero is None:
-                    primero = time.perf_counter() - t0
-                trozos.append(trozo)
+                if first is None:
+                    first = time.perf_counter() - t0
+                chunks.append(chunk)
     except urllib.error.HTTPError as e:
-        cuerpo = e.read().decode("utf-8", "ignore")
+        payload = e.read().decode("utf-8", "ignore")
         if e.code == 429:
-            print(f"⚠️  Cuota agotada. Reintenta en {e.headers.get('Retry-After','?')} s")
-        print(f"⚠️  HTTP {e.code}: {cuerpo[:300]}")
+            print(f"⚠️  Quota exhausted. Retry in {e.headers.get('Retry-After','?')} s")
+        print(f"⚠️  HTTP {e.code}: {payload[:300]}")
         return
     except Exception as e:
-        print(f"⚠️  Error de conexión: {e}")
+        print(f"⚠️  Connection error: {e}")
         return
     elapsed = time.perf_counter() - t0
 
-    audio = b"".join(trozos)
-    texto = base64.b64decode(cab.get("X-Bonsai-Text", "")).decode("utf-8", "replace")
-    print(f"✅ Respuesta en {ms(elapsed)}")
-    print(f"📝 {texto}")
-    print(f"👁️  {cab.get('X-Bonsai-Provider')} · {cab.get('X-Bonsai-Model')}")
+    audio = b"".join(chunks)
+    text = base64.b64decode(head.get("X-Bonsai-Text", "")).decode("utf-8", "replace")
+    print(f"✅ Response in {ms(elapsed)}")
+    print(f"📝 {text}")
+    print(f"👁️  {head.get('X-Bonsai-Provider')} · {head.get('X-Bonsai-Model')}")
 
-    out = f"respuesta_{int(time.time())}.{cab.get('X-Bonsai-Format', 'wav')}"
+    out = f"response_{int(time.time())}.{head.get('X-Bonsai-Format', 'wav')}"
     open(out, "wb").write(audio)
-    print(f"🔊 {out} ({cab.get('X-Bonsai-Tts')} · {cab.get('X-Bonsai-Voice')}, "
+    print(f"🔊 {out} ({head.get('X-Bonsai-Tts')} · {head.get('X-Bonsai-Voice')}, "
           f"{len(audio)/1024:.0f} KB)")
     play(out)
 
-    print("\n⏱️  Tiempos:")
-    print(f"   Codificar imagen : {ms(t_encode)}")
-    print(f"   Reducir (servidor): {cab.get('X-Bonsai-Resize-Ms','0')} ms")
-    print(f"   Visión (servidor) : {cab.get('X-Bonsai-Vision-Ms','?')} ms")
-    if primero is not None:
-        # Es el número que importa: cuando el ESP32 podría empezar a sonar.
-        print(f"   Primer byte audio : {ms(primero)}")
-    print(f"   Audio completo    : {ms(elapsed)}")
+    print("\n⏱️  Timings:")
+    print(f"   Encode image      : {ms(t_encode)}")
+    print(f"   Resize (server)   : {head.get('X-Bonsai-Resize-Ms','0')} ms")
+    print(f"   Vision (server)   : {head.get('X-Bonsai-Vision-Ms','?')} ms")
+    if first is not None:
+        # The number that matters: when the ESP32 could start playing.
+        print(f"   First audio byte  : {ms(first)}")
+    print(f"   Full audio        : {ms(elapsed)}")
     print(f"   TOTAL             : {ms(t_encode + elapsed)}")
 
 
 def cmd_speak(args: list[str]) -> None:
     if not args:
-        print("Uso: speak <texto>")
+        print("Usage: speak <text>")
         return
     text = " ".join(args)
     params = {"text": text, "lang": LANG}
     audio, elapsed = call(f"/speak?{urllib.parse.urlencode(params)}", "POST", raw=True)
     if not audio:
         return
-    out = f"voz_{int(time.time())}.wav"
+    out = f"voice_{int(time.time())}.wav"
     open(out, "wb").write(audio)
-    print(f"🔊 {out} ({len(audio)/1024:.1f} KB en {ms(elapsed)})")
+    print(f"🔊 {out} ({len(audio)/1024:.1f} KB in {ms(elapsed)})")
     play(out)
 
 
 def cmd_remember(args: list[str]) -> None:
     if not args:
-        print("Uso: remember <texto a recordar>")
+        print("Usage: remember <text to remember>")
         return
     fact = " ".join(args)
     data, elapsed = call("/memory", "POST", {"deviceId": DEVICE_ID, "fact": fact})
     if data:
-        print(f"✅ Guardado en {ms(elapsed)}: {fact}")
+        print(f"✅ Saved in {ms(elapsed)}: {fact}")
 
 
 def cmd_memories(_: list[str]) -> None:
@@ -182,45 +185,45 @@ def cmd_memories(_: list[str]) -> None:
     if not data:
         return
     mems = data.get("memories", [])
-    print(f"📚 {len(mems)} recuerdo(s) ({ms(elapsed)}):")
+    print(f"📚 {len(mems)} memory(ies) ({ms(elapsed)}):")
     for m in mems:
         print(f"   [{m['id'][:8]}] {m['fact']}")
 
 
 def cmd_forget(args: list[str]) -> None:
     if not args:
-        print("Uso: forget <id o prefijo>")
+        print("Usage: forget <id or prefix>")
         return
     data, elapsed = call(f"/memory/{DEVICE_ID}/{args[0]}", "DELETE")
     if data:
-        print(f"🗑️  Borrado en {ms(elapsed)}")
+        print(f"🗑️  Deleted in {ms(elapsed)}")
 
 
 def cmd_health(_: list[str]) -> None:
     data, elapsed = call("/health")
     if not data:
         return
-    print(f"💚 servidor vivo ({ms(elapsed)})")
+    print(f"💚 server alive ({ms(elapsed)})")
     v = data.get("vision") or {}
-    clave = "clave ok" if v.get("keyConfigured") else "SIN CLAVE"
-    print(f"   👁️  {v.get('model'):<24} {clave}")
+    key = "key ok" if v.get("keyConfigured") else "NO KEY"
+    print(f"   👁️  {v.get('model'):<24} {key}")
     t = data.get("tts") or {}
     piper = t.get("piper") or {}
-    # Lo que importa ver: si Piper no arrancó, las gafas se quedan mudas.
-    aviso = "" if piper.get("ok") else f"  ⚠️  Piper no arrancó: {piper.get('error')}"
-    print(f"   🔊 piper ({t.get('format')}){aviso}")
+    # What matters here: if Piper did not start, the glasses stay mute.
+    warning = "" if piper.get("ok") else f"  ⚠️  Piper did not start: {piper.get('error')}"
+    print(f"   🔊 piper ({t.get('format')}){warning}")
 
 
 def cmd_config(args: list[str]) -> None:
     global API_URL, DEVICE_ID, LANG, API_TOKEN
     if not args:
-        shown = (API_TOKEN[:4] + "…") if API_TOKEN else "(sin token)"
+        shown = (API_TOKEN[:4] + "…") if API_TOKEN else "(no token)"
         print(f"API_URL   = {API_URL}{API_PREFIX}\nDEVICE_ID = {DEVICE_ID}\n"
               f"LANG      = {LANG}\nTOKEN     = {shown}")
         return
     key, *rest = args
     if not rest:
-        print("Uso: config url <url> | device <id> | lang <ca|es|en> | token <token>")
+        print("Usage: config url <url> | device <id> | lang <ca|es|en> | token <token>")
         return
     if key == "url":
         API_URL = rest[0].rstrip("/")
@@ -231,20 +234,20 @@ def cmd_config(args: list[str]) -> None:
     elif key == "token":
         API_TOKEN = rest[0]
     else:
-        print("Clave desconocida. Usa: url, device, lang o token")
+        print("Unknown key. Use: url, device, lang or token")
         return
     cmd_config([])
 
 
 HELP = """
-Comandos:
-  describe <imagen> [prompt]   Envía una imagen, mide tiempos y reproduce el audio
-  speak <texto>                Solo texto a voz
-  remember <texto>             Guarda un recuerdo
-  memories                     Lista los recuerdos
-  forget <id>                  Borra un recuerdo (vale el prefijo)
-  health                       Comprueba que el servidor responde
-  config [url|device|lang|token] <v>   Ver o cambiar configuración
+Commands:
+  describe <image> [prompt]    Send an image, measure timings and play the audio
+  speak <text>                 Text to speech only
+  remember <text>              Store a memory
+  memories                     List the memories
+  forget <id>                  Delete a memory (a prefix works)
+  health                       Check that the server responds
+  config [url|device|lang|token] <v>   Show or change configuration
   help / exit
 """
 
@@ -257,8 +260,8 @@ COMMANDS = {
 
 def main() -> None:
     print("=" * 60)
-    print("  Bonsai Backend — terminal de pruebas")
-    print(f"  API: {API_URL}{API_PREFIX} | Device: {DEVICE_ID} | Idioma: {LANG}")
+    print("  Bonsai Backend — manual test terminal")
+    print(f"  API: {API_URL}{API_PREFIX} | Device: {DEVICE_ID} | Language: {LANG}")
     print("=" * 60)
     print(HELP)
 
@@ -279,7 +282,7 @@ def main() -> None:
         elif cmd in COMMANDS:
             COMMANDS[cmd](args)
         else:
-            print(f"Comando desconocido: {cmd}. Escribe 'help'.")
+            print(f"Unknown command: {cmd}. Type 'help'.")
 
 
 if __name__ == "__main__":

@@ -300,7 +300,7 @@ $("file").onchange = async e => {
       ["Primer byte d'àudio", `${primerByte === null ? "—" : primerByte.toFixed(0) + " ms"}`],
       ["Àudio complet", `${msReq.toFixed(0)} ms`],
       ["Enviat / rebut", `${(prep.bytes / 1024).toFixed(0)} KB / ${(total / 1024).toFixed(0)} KB`],
-      ["Model", `${r.headers.get("X-Bonsai-Provider")} · ${r.headers.get("X-Bonsai-Model")}`],
+      ["Model", `${r.headers.get("X-Bonsai-Model")}`],
       ["Veu", `${r.headers.get("X-Bonsai-Tts")} · ${r.headers.get("X-Bonsai-Voice")}`],
     ];
 

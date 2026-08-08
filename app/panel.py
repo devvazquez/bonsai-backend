@@ -1,15 +1,10 @@
-"""Panel d'administració de la base de dades, muntat dins del mateix FastAPI.
+"""Database admin panel, mounted inside the same FastAPI app.
 
-Substitueix DbGate. Fa el mateix que necessitem d'ell —explorar taules, editar
-files, crear taules i columnes, executar SQL— però integrat al backend: un sol
-contenidor, un sol port, un sol login, i amb l'aspecte del projecte en comptes
-d'una interfície genèrica.
+Replaces DbGate: browse tables, edit rows, create tables and columns, run SQL,
+but integrated into the backend — one container, one port, one login.
 
-Va amb NiceGUI, que serveix Vue i Quasar des del mateix paquet: no depèn de cap
-CDN, així que funciona igual en una VPS sense sortida a internet.
-
-La paleta ve de la skill ui-ux-pro-max (perfil "Space Tech"): fons gairebé
-negre i blau com a únic accent.
+Built with NiceGUI, which serves Vue and Quasar from its own package, so it
+works on a VPS with no outbound internet.
 """
 
 from __future__ import annotations
@@ -27,38 +22,36 @@ from starlette.responses import RedirectResponse
 
 from . import memory
 
-# Contrasenya per entrar-hi. Això és accés SQL complet a la base de dades, així
-# que si no n'hi ha cap de definida el panell no es munta: val més que no hi
-# sigui que no pas que hi sigui obert.
-CONTRASENYA = os.environ.get("ADMIN_PASSWORD", "")
+# This is full SQL access to the database, so with no password defined the
+# panel is not mounted at all: better absent than open.
+PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 
-# Prefix on està muntat el panell. El fixa construeix(). Només cal per al
-# middleware, que veu el camí sencer; dins de les pàgines, ui.navigate.to()
-# ja hi posa el prefix sol.
+# Prefix where the panel is mounted, set by build(). Only the middleware needs
+# it (it sees the full path); inside pages ui.navigate.to() adds it already.
 PREFIX = "/admin"
 
 # --------------------------------------------------------------------------
-# Paleta
+# Palette
 # --------------------------------------------------------------------------
 C = {
-    "bg": "#0B0B10",        # fons, gairebé negre
-    "surface": "#121218",   # panells
-    "card": "#1A1A21",      # elevat
-    "line": "#242430",      # vores
-    "line2": "#33333F",     # vores destacades
+    "bg": "#0B0B10",        # background, near black
+    "surface": "#121218",   # panels
+    "card": "#1A1A21",      # raised
+    "line": "#242430",      # borders
+    "line2": "#33333F",     # highlighted borders
     "fg": "#F8FAFC",
     "dim": "#A1A1B5",
     "faint": "#6C6C82",
-    "accent": "#3B82F6",    # blau
+    "accent": "#3B82F6",    # blue
     "accent2": "#60A5FA",
     "danger": "#EF4444",
     "ok": "#34D399",
     "warn": "#FBBF24",
 }
 
-# Files per pàgina en explorar una taula. Suficient per treballar sense
-# convertir la pàgina en una descàrrega de tota la base de dades.
-PER_PAGINA = 50
+# Rows per page when browsing a table: enough to work with without turning the
+# page into a download of the whole database.
+PER_PAGE = 50
 
 CSS = f"""
 :root {{
@@ -70,8 +63,8 @@ CSS = f"""
 body, .nicegui-content {{ background:var(--bg); color:var(--fg); }}
 .q-page, .nicegui-content {{ padding:0 !important; }}
 
-/* Tipografia: pila del sistema per no dependre de Google Fonts, i
-   monoespaiada de debò per a les dades, que és on cal alinear. */
+/* System font stack to avoid depending on Google Fonts, and a real monospace
+   for the data, which is where alignment matters. */
 body {{ font-family: ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
         -webkit-font-smoothing:antialiased; }}
 .mono {{ font-family: ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,monospace; }}
@@ -79,13 +72,13 @@ body {{ font-family: ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif
 .panel {{ background:var(--surface); border:1px solid var(--line); border-radius:10px; }}
 .hairline {{ border-color:var(--line) !important; }}
 
-/* Barra lateral */
-.taula-item {{ border-radius:8px; cursor:pointer; transition:background .15s,color .15s; }}
-.taula-item:hover {{ background:var(--card); }}
-.taula-item[data-sel="true"] {{ background:rgba(59,130,246,.14);
+/* Sidebar */
+.table-item {{ border-radius:8px; cursor:pointer; transition:background .15s,color .15s; }}
+.table-item:hover {{ background:var(--card); }}
+.table-item[data-sel="true"] {{ background:rgba(59,130,246,.14);
   box-shadow:inset 2px 0 0 var(--accent); }}
 
-/* Taula de dades */
+/* Data table */
 .q-table__container {{ background:transparent !important; }}
 .q-table thead th {{
   background:var(--surface) !important; color:var(--faint) !important;
@@ -111,43 +104,41 @@ body {{ font-family: ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif
 .q-btn {{ text-transform:none !important; font-weight:500; letter-spacing:0; }}
 .q-btn:not(.q-btn--flat) {{ border-radius:8px; }}
 
-/* Accessibilitat: focus visible sempre, i respectar qui demana no-animacions */
+/* Accessibility: always-visible focus, and honour reduced-motion requests */
 *:focus-visible {{ outline:2px solid var(--accent); outline-offset:2px; }}
 @media (prefers-reduced-motion:reduce) {{
   * {{ animation:none !important; transition:none !important; }}
 }}
 
-/* Els diàlegs són q-card, que porta la seva pròpia vora clara */
+/* Dialogs are q-card, which brings its own light border */
 .q-dialog .q-card {{ border:1px solid var(--line2) !important;
   background:var(--surface) !important; }}
 
-/* Les dades poden ser més amples que la pantalla: que faci scroll la taula i
-   no la pàgina sencera. */
+/* Data can be wider than the screen: scroll the table, not the whole page. */
 .scroll-x {{ width:100%; overflow-x:auto; }}
 
-/* Mòbil: la barra lateral passa a dalt en comptes de robar amplada */
+/* Mobile: the sidebar moves on top instead of stealing width */
 @media (max-width:860px) {{
-  /* NiceGUI posa flex-wrap:nowrap a .nicegui-row, cal guanyar-li */
-  .cos {{ flex-wrap:wrap !important; }}
-  .lateral {{ width:100% !important; border-right:none !important;
+  /* NiceGUI sets flex-wrap:nowrap on .nicegui-row, we have to beat it */
+  .body-row {{ flex-wrap:wrap !important; }}
+  .sidebar {{ width:100% !important; border-right:none !important;
     border-bottom:1px solid var(--line);
-    /* que ocupi el que necessita, no tota l'alçada de la pantalla */
+    /* take only the height it needs, not the whole screen */
     align-self:flex-start; }}
-  /* flex:1 amb wrap es queda a amplada zero: cal dir-li que ocupi la fila */
-  /* l'estil en línia posa flex:1 (basis 0), que aquí deixa la columna
-     a zero d'amplada: cal donar-li la fila sencera */
-  .principal {{ flex:1 1 100% !important; }}
+  /* the inline flex:1 (basis 0) collapses the column to zero width once
+     wrapping, so give it the whole row */
+  .main {{ flex:1 1 100% !important; }}
 }}
 
 .badge {{ font-size:11px; padding:1px 7px; border-radius:20px;
   border:1px solid var(--line2); color:var(--dim); font-variant-numeric:tabular-nums; }}
-.chip-tipus {{ font-size:10px; letter-spacing:.05em; color:var(--faint);
+.chip-type {{ font-size:10px; letter-spacing:.05em; color:var(--faint);
   text-transform:uppercase; }}
 """
 
 
 # --------------------------------------------------------------------------
-# Accés a la base de dades
+# Database access
 # --------------------------------------------------------------------------
 def _conn() -> sqlite3.Connection:
     c = sqlite3.connect(memory.DB_PATH)
@@ -155,19 +146,19 @@ def _conn() -> sqlite3.Connection:
     return c
 
 
-def _cita(nom: str) -> str:
-    """Cita un identificador per a SQL.
+def _quote(name: str) -> str:
+    """Quote an identifier for SQL.
 
-    Els noms de taula i columna no es poden passar com a paràmetre, així que
-    van dins de la consulta. Doblar les cometes és el que impedeix que un nom
-    com `a"; DROP TABLE x --` es converteixi en una altra instrucció.
+    Table and column names cannot be bound as parameters, so they go inline;
+    doubling the quotes is what stops `a"; DROP TABLE x --` from becoming a
+    second statement.
     """
-    return '"' + str(nom).replace('"', '""') + '"'
+    return '"' + str(name).replace('"', '""') + '"'
 
 
-def taules() -> list[dict[str, Any]]:
+def tables() -> list[dict[str, Any]]:
     with _conn() as c:
-        noms = [
+        names = [
             r["name"]
             for r in c.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' "
@@ -175,100 +166,100 @@ def taules() -> list[dict[str, Any]]:
             )
         ]
         out = []
-        for n in noms:
+        for n in names:
             try:
-                total = c.execute(f"SELECT COUNT(*) FROM {_cita(n)}").fetchone()[0]
+                total = c.execute(f"SELECT COUNT(*) FROM {_quote(n)}").fetchone()[0]
             except sqlite3.Error:
                 total = 0
-            out.append({"nom": n, "files": total})
+            out.append({"name": n, "rows": total})
     return out
 
 
-def columnes(taula: str) -> list[dict[str, Any]]:
+def columns(table: str) -> list[dict[str, Any]]:
     with _conn() as c:
-        return [dict(r) for r in c.execute(f"PRAGMA table_info({_cita(taula)})")]
+        return [dict(r) for r in c.execute(f"PRAGMA table_info({_quote(table)})")]
 
 
-def indexs(taula: str) -> list[dict[str, Any]]:
+def indexes(table: str) -> list[dict[str, Any]]:
     with _conn() as c:
         out = []
-        for r in c.execute(f"PRAGMA index_list({_cita(taula)})"):
+        for r in c.execute(f"PRAGMA index_list({_quote(table)})"):
             cols = [
                 x["name"]
-                for x in c.execute(f"PRAGMA index_info({_cita(r['name'])})")
+                for x in c.execute(f"PRAGMA index_info({_quote(r['name'])})")
             ]
-            out.append({"nom": r["name"], "unic": bool(r["unique"]), "cols": cols})
+            out.append({"name": r["name"], "unique": bool(r["unique"]), "cols": cols})
     return out
 
 
-def ddl(taula: str) -> str:
+def ddl(table: str) -> str:
     with _conn() as c:
         r = c.execute(
-            "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (taula,)
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table,)
         ).fetchone()
-    brut = (r["sql"] if r else "") or ""
-    # El CREATE TABLE es guarda tal com es va escriure, sagnat inclòs. Aquí
-    # queda desalineat, així que es reindenta a dos espais.
-    linies = brut.splitlines()
+    raw = (r["sql"] if r else "") or ""
+    # CREATE TABLE is stored exactly as written, indentation included, which
+    # looks ragged here: re-indent to two spaces.
+    lines = raw.splitlines()
     return "\n".join(
-        [linies[0].strip()] + ["  " + l.strip() for l in linies[1:] if l.strip()]
-    ) if linies else ""
+        [lines[0].strip()] + ["  " + l.strip() for l in lines[1:] if l.strip()]
+    ) if lines else ""
 
 
-def files(taula: str, pagina: int, cerca: str = "") -> tuple[list[dict], int]:
-    cols = [c["name"] for c in columnes(taula)]
+def rows(table: str, page: int, search: str = "") -> tuple[list[dict], int]:
+    cols = [c["name"] for c in columns(table)]
     where, params = "", []
-    if cerca.strip() and cols:
-        # Cerca en totes les columnes alhora: en una taula petita és el que
-        # s'espera, i evita haver de triar columna abans de buscar.
+    if search.strip() and cols:
+        # Search every column at once: that is what one expects on a small
+        # table, and it saves picking a column before searching.
         where = " WHERE " + " OR ".join(
-            f"CAST({_cita(c)} AS TEXT) LIKE ?" for c in cols
+            f"CAST({_quote(c)} AS TEXT) LIKE ?" for c in cols
         )
-        params = [f"%{cerca.strip()}%"] * len(cols)
+        params = [f"%{search.strip()}%"] * len(cols)
     with _conn() as c:
         total = c.execute(
-            f"SELECT COUNT(*) FROM {_cita(taula)}{where}", params
+            f"SELECT COUNT(*) FROM {_quote(table)}{where}", params
         ).fetchone()[0]
-        rows = c.execute(
-            f"SELECT rowid AS _rowid, * FROM {_cita(taula)}{where} "
+        records = c.execute(
+            f"SELECT rowid AS _rowid, * FROM {_quote(table)}{where} "
             f"LIMIT ? OFFSET ?",
-            [*params, PER_PAGINA, pagina * PER_PAGINA],
+            [*params, PER_PAGE, page * PER_PAGE],
         ).fetchall()
-    return [dict(r) for r in rows], total
+    return [dict(r) for r in records], total
 
 
-def executa(sql: str) -> dict[str, Any]:
-    """Executa SQL lliure. Torna files si en dona, o quantes n'ha tocat."""
+def run_sql(sql: str) -> dict[str, Any]:
+    """Run free-form SQL. Returns rows if it yields any, else the row count."""
     t0 = time.perf_counter()
     with _conn() as c:
         cur = c.execute(sql)
         if cur.description:
             cols = [d[0] for d in cur.description]
-            rows = [dict(r) for r in cur.fetchmany(500)]
-            return {"cols": cols, "rows": rows,
+            result = [dict(r) for r in cur.fetchmany(500)]
+            return {"cols": cols, "rows": result,
                     "ms": (time.perf_counter() - t0) * 1000}
-        return {"tocades": cur.rowcount,
+        return {"affected": cur.rowcount,
                 "ms": (time.perf_counter() - t0) * 1000}
 
 
 # --------------------------------------------------------------------------
-# Peces d'interfície
+# UI pieces
 # --------------------------------------------------------------------------
-def avis(text: str, tipus: str = "ok") -> None:
+def notify(text: str, kind: str = "ok") -> None:
     ui.notify(
         text,
         position="top-right",
-        color={"ok": C["accent"], "err": C["danger"]}.get(tipus, C["accent"]),
+        color={"ok": C["accent"], "err": C["danger"]}.get(kind, C["accent"]),
         text_color="#fff",
-        timeout=4000 if tipus == "err" else 2200,
+        timeout=4000 if kind == "err" else 2200,
     )
 
 
-def boto(text: str, on_click, icon: str | None = None, tipus: str = "normal"):
+def button(text: str, on_click, icon: str | None = None, kind: str = "normal"):
     b = ui.button(text, on_click=on_click, icon=icon)
-    if tipus == "primari":
+    if kind == "primary":
         b.props(f'unelevated color=blue-6 no-caps')
-    elif tipus == "perill":
+    elif kind == "danger":
         b.props('flat no-caps color=red-5')
     else:
         b.props('outline no-caps').style(f"color:{C['dim']};border-color:{C['line2']}")
@@ -277,188 +268,188 @@ def boto(text: str, on_click, icon: str | None = None, tipus: str = "normal"):
 
 
 class Panel:
-    """Tot l'estat del panell: quina taula, quina pestanya, quina pàgina."""
+    """All the panel state: which table, which tab, which page."""
 
     def __init__(self) -> None:
-        self.taula: str | None = None
-        self.pestanya = "dades"
-        self.pagina = 0
-        self.cerca = ""
-        self.cont_lateral = None
-        self.cont_principal = None
+        self.table: str | None = None
+        self.tab = "data"
+        self.page = 0
+        self.search = ""
+        self.sidebar_container = None
+        self.main_container = None
 
-    # ---------------- barra lateral ----------------
-    def pinta_lateral(self) -> None:
-        self.cont_lateral.clear()
-        with self.cont_lateral:
-            llista = taules()
+    # ---------------- sidebar ----------------
+    def draw_sidebar(self) -> None:
+        self.sidebar_container.clear()
+        with self.sidebar_container:
+            listing = tables()
             with ui.row().classes("w-full items-center justify-between px-1 pb-2"):
-                ui.label("TAULES").style(
+                ui.label("TABLES").style(
                     f"color:{C['faint']};font-size:11px;letter-spacing:.09em;font-weight:600")
-                ui.label(str(len(llista))).classes("badge")
-            for t in llista:
-                sel = t["nom"] == self.taula
+                ui.label(str(len(listing))).classes("badge")
+            for t in listing:
+                sel = t["name"] == self.table
                 with ui.row().classes(
-                    "taula-item w-full items-center justify-between px-3 py-2"
+                    "table-item w-full items-center justify-between px-3 py-2"
                 ).props(f'data-sel={str(sel).lower()}').on(
-                    "click", lambda _, n=t["nom"]: self.obre(n)
+                    "click", lambda _, n=t["name"]: self.open(n)
                 ):
-                    ui.label(t["nom"]).classes("mono text-sm").style(
+                    ui.label(t["name"]).classes("mono text-sm").style(
                         f"color:{C['accent'] if sel else C['fg']}")
-                    ui.label(f"{t['files']:,}").classes("badge")
-            if not llista:
-                ui.label("Cap taula encara").style(
+                    ui.label(f"{t['rows']:,}").classes("badge")
+            if not listing:
+                ui.label("No tables yet").style(
                     f"color:{C['faint']};font-size:13px;padding:12px 4px")
 
             ui.separator().classes("hairline my-3")
-            boto("Nova taula", self.dialeg_nova_taula, icon="add").classes("w-full")
+            button("New table", self.dialog_new_table, icon="add").classes("w-full")
 
-    # ---------------- principal ----------------
-    def obre(self, nom: str) -> None:
-        self.taula = nom
-        self.pagina = 0
-        self.cerca = ""
-        self.pinta_lateral()
-        self.pinta_principal()
+    # ---------------- main ----------------
+    def open(self, name: str) -> None:
+        self.table = name
+        self.page = 0
+        self.search = ""
+        self.draw_sidebar()
+        self.draw_main()
 
-    def pinta_principal(self) -> None:
-        self.cont_principal.clear()
-        with self.cont_principal:
-            if not self.taula:
-                self.buit()
+    def draw_main(self) -> None:
+        self.main_container.clear()
+        with self.main_container:
+            if not self.table:
+                self.empty()
                 return
-            self.capcalera()
-            if self.pestanya == "dades":
-                self.vista_dades()
-            elif self.pestanya == "estructura":
-                self.vista_estructura()
+            self.header()
+            if self.tab == "data":
+                self.data_view()
+            elif self.tab == "structure":
+                self.structure_view()
             else:
-                self.vista_sql()
+                self.sql_view()
 
-    def buit(self) -> None:
+    def empty(self) -> None:
         with ui.column().classes("w-full items-center justify-center gap-3").style(
             "min-height:60vh"
         ):
             ui.icon("database").style(f"font-size:44px;color:{C['line2']}")
-            ui.label("Tria una taula").style(f"color:{C['dim']};font-size:15px")
-            ui.label("O executa SQL directament des de la pestanya SQL.").style(
+            ui.label("Pick a table").style(f"color:{C['dim']};font-size:15px")
+            ui.label("Or run SQL directly from the SQL tab.").style(
                 f"color:{C['faint']};font-size:13px")
 
-    def capcalera(self) -> None:
+    def header(self) -> None:
         with ui.row().classes("w-full items-center gap-2 px-5 pt-4 pb-3"):
-            ui.label(self.taula).classes("mono text-lg").style(
+            ui.label(self.table).classes("mono text-lg").style(
                 f"color:{C['fg']};font-weight:600")
             ui.space()
-            for clau, etiqueta in (("dades", "Dades"), ("estructura", "Estructura"),
-                                   ("sql", "SQL")):
-                actiu = self.pestanya == clau
+            for key, label in (("data", "Data"), ("structure", "Structure"),
+                               ("sql", "SQL")):
+                active = self.tab == key
                 ui.button(
-                    etiqueta, on_click=lambda _, k=clau: self.canvia_pestanya(k)
+                    label, on_click=lambda _, k=key: self.switch_tab(k)
                 ).props("flat no-caps dense").classes("cursor-pointer").style(
-                    f"color:{C['accent'] if actiu else C['dim']};"
-                    f"font-weight:{600 if actiu else 400};"
-                    f"border-bottom:2px solid {C['accent'] if actiu else 'transparent'};"
+                    f"color:{C['accent'] if active else C['dim']};"
+                    f"font-weight:{600 if active else 400};"
+                    f"border-bottom:2px solid {C['accent'] if active else 'transparent'};"
                     "border-radius:0;padding:2px 10px"
                 )
         ui.separator().classes("hairline")
 
-    def canvia_pestanya(self, k: str) -> None:
-        self.pestanya = k
-        self.pinta_principal()
+    def switch_tab(self, k: str) -> None:
+        self.tab = k
+        self.draw_main()
 
-    # ---------------- dades ----------------
-    def vista_dades(self) -> None:
-        dades, total = files(self.taula, self.pagina, self.cerca)
-        cols_info = columnes(self.taula)
+    # ---------------- data ----------------
+    def data_view(self) -> None:
+        data, total = rows(self.table, self.page, self.search)
+        cols_info = columns(self.table)
 
         with ui.row().classes("w-full items-center gap-3 px-5 py-3"):
-            cerca = ui.input(placeholder="Filtrar files…").props(
+            search = ui.input(placeholder="Filter rows…").props(
                 "outlined dense clearable"
             ).style("width:240px")
-            cerca.on("keydown.enter", lambda: self.filtra(cerca.value or ""))
-            boto("Filtrar", lambda: self.filtra(cerca.value or ""), icon="search")
+            search.on("keydown.enter", lambda: self.filter(search.value or ""))
+            button("Filter", lambda: self.filter(search.value or ""), icon="search")
             ui.space()
-            ui.label(f"{total:,} files").style(f"color:{C['faint']};font-size:13px")
-            boto("Nova fila", self.dialeg_nova_fila, icon="add", tipus="primari")
+            ui.label(f"{total:,} rows").style(f"color:{C['faint']};font-size:13px")
+            button("New row", self.dialog_new_row, icon="add", kind="primary")
 
-        if not dades:
+        if not data:
             with ui.column().classes("w-full items-center py-14 gap-2"):
-                ui.label("Cap fila" + (f" amb «{self.cerca}»" if self.cerca else "")
+                ui.label("No rows" + (f" matching «{self.search}»" if self.search else "")
                          ).style(f"color:{C['dim']}")
             return
 
-        noms = [c["name"] for c in cols_info]
-        columns = [
+        names = [c["name"] for c in cols_info]
+        col_defs = [
             {"name": n, "label": n, "field": n, "align": "left", "sortable": True}
-            for n in noms
+            for n in names
         ]
-        columns.append({"name": "_acc", "label": "", "field": "_acc", "align": "right"})
+        col_defs.append({"name": "_acc", "label": "", "field": "_acc", "align": "right"})
 
         with ui.element("div").classes("scroll-x"):
-            taula_ui = ui.table(
-                columns=columns, rows=dades, row_key="_rowid",
+            table_ui = ui.table(
+                columns=col_defs, rows=data, row_key="_rowid",
             ).classes("w-full").props("flat dense wrap-cells")
-            taula_ui.style("background:transparent;min-width:640px")
+            table_ui.style("background:transparent;min-width:640px")
 
-        # Botó d'esborrar per fila. Es fa amb un slot perquè Quasar el pinti
-        # dins de la cel·la, no en una columna a part que trencaria l'alineació.
-        taula_ui.add_slot("body-cell-_acc", r'''
+        # Per-row delete button, via a slot so Quasar paints it inside the cell
+        # instead of a separate column that would break the alignment.
+        table_ui.add_slot("body-cell-_acc", r'''
             <q-td :props="props" style="width:1%">
               <q-btn dense flat icon="delete_outline" size="sm"
                      color="grey-6" class="cursor-pointer"
-                     @click="$parent.$emit('esborra', props.row)" />
+                     @click="$parent.$emit('remove', props.row)" />
             </q-td>
         ''')
-        taula_ui.on("esborra", lambda e: self.confirma_esborrar(e.args))
+        table_ui.on("remove", lambda e: self.confirm_delete(e.args))
 
-        # Editar fent doble clic: és el gest que s'espera en una graella.
-        taula_ui.on("rowDblclick", lambda e: self.dialeg_edita_fila(e.args[1]))
+        # Double click to edit: the expected gesture in a grid.
+        table_ui.on("rowDblclick", lambda e: self.dialog_edit_row(e.args[1]))
 
-        pagines = max(1, -(-total // PER_PAGINA))
-        if pagines > 1:
+        pages = max(1, -(-total // PER_PAGE))
+        if pages > 1:
             with ui.row().classes("w-full items-center justify-center gap-3 py-3"):
-                boto("Anterior", lambda: self.va_pagina(self.pagina - 1),
-                     icon="chevron_left").set_enabled(self.pagina > 0)
-                ui.label(f"{self.pagina + 1} / {pagines}").style(
+                button("Previous", lambda: self.go_page(self.page - 1),
+                       icon="chevron_left").set_enabled(self.page > 0)
+                ui.label(f"{self.page + 1} / {pages}").style(
                     f"color:{C['dim']};font-size:13px")
-                boto("Següent", lambda: self.va_pagina(self.pagina + 1),
-                     icon="chevron_right").set_enabled(self.pagina < pagines - 1)
+                button("Next", lambda: self.go_page(self.page + 1),
+                       icon="chevron_right").set_enabled(self.page < pages - 1)
 
         with ui.row().classes("px-5 pb-4"):
-            ui.label("Doble clic en una fila per editar-la.").style(
+            ui.label("Double click a row to edit it.").style(
                 f"color:{C['faint']};font-size:12px")
 
-    def filtra(self, text: str) -> None:
-        self.cerca = text
-        self.pagina = 0
-        self.pinta_principal()
+    def filter(self, text: str) -> None:
+        self.search = text
+        self.page = 0
+        self.draw_main()
 
-    def va_pagina(self, n: int) -> None:
-        self.pagina = n
-        self.pinta_principal()
+    def go_page(self, n: int) -> None:
+        self.page = n
+        self.draw_main()
 
-    # ---------------- estructura ----------------
-    def vista_estructura(self) -> None:
+    # ---------------- structure ----------------
+    def structure_view(self) -> None:
         with ui.column().classes("w-full gap-4 p-5"):
             with ui.element("div").classes("panel w-full p-4"):
-                ui.label("SQL DE CREACIÓ").style(
+                ui.label("CREATE SQL").style(
                     f"color:{C['faint']};font-size:11px;letter-spacing:.09em;font-weight:600")
-                ui.label(ddl(self.taula)).classes("mono text-xs whitespace-pre-wrap mt-2"
+                ui.label(ddl(self.table)).classes("mono text-xs whitespace-pre-wrap mt-2"
                                                   ).style(f"color:{C['dim']}")
 
             with ui.element("div").classes("panel w-full"):
                 with ui.row().classes("w-full items-center justify-between p-4 pb-3"):
-                    ui.label("COLUMNES").style(
+                    ui.label("COLUMNS").style(
                         f"color:{C['faint']};font-size:11px;letter-spacing:.09em;font-weight:600")
-                    boto("Afegir columna", self.dialeg_nova_columna, icon="add")
+                    button("Add column", self.dialog_new_column, icon="add")
                 ui.separator().classes("hairline")
-                for c in columnes(self.taula):
+                for c in columns(self.table):
                     with ui.row().classes("w-full items-center gap-3 px-4 py-3").style(
                         f"border-bottom:1px solid {C['line']}"
                     ):
                         ui.label(c["name"]).classes("mono text-sm").style(
                             f"color:{C['fg']};min-width:170px")
-                        ui.label(c["type"] or "—").classes("chip-tipus")
+                        ui.label(c["type"] or "—").classes("chip-type")
                         ui.space()
                         if c["pk"]:
                             ui.label("PRIMARY KEY").classes("badge").style(
@@ -466,57 +457,57 @@ class Panel:
                         if c["notnull"]:
                             ui.label("NOT NULL").classes("badge")
 
-            idx = indexs(self.taula)
+            idx = indexes(self.table)
             if idx:
                 with ui.element("div").classes("panel w-full"):
-                    ui.label("ÍNDEXS").classes("p-4 pb-3 block").style(
+                    ui.label("INDEXES").classes("p-4 pb-3 block").style(
                         f"color:{C['faint']};font-size:11px;letter-spacing:.09em;font-weight:600")
                     ui.separator().classes("hairline")
                     for i in idx:
                         with ui.row().classes("w-full items-center gap-3 px-4 py-3").style(
                             f"border-bottom:1px solid {C['line']}"
                         ):
-                            ui.label(i["nom"]).classes("mono text-sm").style(
+                            ui.label(i["name"]).classes("mono text-sm").style(
                                 f"color:{C['fg']}")
-                            ui.label(", ".join(i["cols"])).classes("chip-tipus")
+                            ui.label(", ".join(i["cols"])).classes("chip-type")
                             ui.space()
-                            if i["unic"]:
-                                ui.label("ÚNIC").classes("badge")
+                            if i["unique"]:
+                                ui.label("UNIQUE").classes("badge")
 
             with ui.row().classes("w-full justify-end pt-1"):
-                boto("Esborrar taula", self.confirma_drop, icon="delete_outline",
-                     tipus="perill")
+                button("Drop table", self.confirm_drop, icon="delete_outline",
+                       kind="danger")
 
     # ---------------- SQL ----------------
-    def vista_sql(self) -> None:
+    def sql_view(self) -> None:
         with ui.column().classes("w-full gap-3 p-5"):
             editor = ui.textarea(
-                placeholder=f"SELECT * FROM {self.taula} LIMIT 10;"
+                placeholder=f"SELECT * FROM {self.table} LIMIT 10;"
             ).props("outlined").classes("w-full mono").style("min-height:150px")
-            barra = ui.row().classes("gap-2 items-center")
-            resultat = ui.column().classes("w-full")
+            bar = ui.row().classes("gap-2 items-center")
+            output = ui.column().classes("w-full")
 
-            def corre() -> None:
+            def run() -> None:
                 sql = (editor.value or "").strip()
                 if not sql:
                     return
-                resultat.clear()
+                output.clear()
                 try:
-                    r = executa(sql)
+                    r = run_sql(sql)
                 except sqlite3.Error as e:
-                    with resultat:
+                    with output:
                         with ui.element("div").classes("panel w-full p-4").style(
                             f"border-color:{C['danger']}"
                         ):
                             ui.label(str(e)).classes("mono text-sm").style(
                                 f"color:{C['danger']}")
                     return
-                self.pinta_lateral()
-                with resultat:
+                self.draw_sidebar()
+                with output:
                     if "rows" in r:
                         ui.label(
-                            f"{len(r['rows'])} files · {r['ms']:.0f} ms"
-                            + (" · només es mostren les 500 primeres"
+                            f"{len(r['rows'])} rows · {r['ms']:.0f} ms"
+                            + (" · showing only the first 500"
                                if len(r["rows"]) == 500 else "")
                         ).style(f"color:{C['faint']};font-size:12px")
                         if r["rows"]:
@@ -528,290 +519,289 @@ class Panel:
                                 ).classes("w-full").props("flat dense wrap-cells")
                     else:
                         ui.label(
-                            f"{r['tocades']} files afectades · {r['ms']:.0f} ms"
+                            f"{r['affected']} rows affected · {r['ms']:.0f} ms"
                         ).style(f"color:{C['ok']};font-size:13px")
-                        avis("Consulta executada")
+                        notify("Query executed")
 
-            with barra:
-                boto("Executar", corre, icon="play_arrow", tipus="primari")
+            with bar:
+                button("Run", run, icon="play_arrow", kind="primary")
                 ui.label("Ctrl+Enter").style(f"color:{C['faint']};font-size:12px")
-            editor.on("keydown.ctrl.enter", corre)
+            editor.on("keydown.ctrl.enter", run)
 
-    # ---------------- diàlegs ----------------
-    def _dialeg(self, titol: str):
+    # ---------------- dialogs ----------------
+    def _dialog(self, title: str):
         d = ui.dialog()
         with d, ui.card().classes("panel").style(
             f"background:{C['surface']};min-width:420px;padding:20px"
         ):
-            ui.label(titol).style(f"color:{C['fg']};font-size:16px;font-weight:600")
+            ui.label(title).style(f"color:{C['fg']};font-size:16px;font-weight:600")
         return d
 
-    def dialeg_nova_fila(self) -> None:
-        cols = [c for c in columnes(self.taula)]
-        d = self._dialeg(f"Nova fila a {self.taula}")
-        camps: dict[str, Any] = {}
+    def dialog_new_row(self) -> None:
+        cols = [c for c in columns(self.table)]
+        d = self._dialog(f"New row in {self.table}")
+        fields: dict[str, Any] = {}
         with d, d.default_slot.children[0]:
             for c in cols:
-                camps[c["name"]] = ui.input(
+                fields[c["name"]] = ui.input(
                     label=f"{c['name']}  ({c['type'] or 'TEXT'})"
                 ).props("outlined dense").classes("w-full")
             with ui.row().classes("w-full justify-end gap-2 pt-3"):
-                boto("Cancel·lar", d.close)
-                boto("Afegir", lambda: self._insereix(camps, d), tipus="primari")
+                button("Cancel", d.close)
+                button("Add", lambda: self._insert(fields, d), kind="primary")
         d.open()
 
-    def _insereix(self, camps: dict, d) -> None:
-        noms = [n for n, c in camps.items() if (c.value or "") != ""]
-        if not noms:
-            avis("Omple almenys un camp", "err")
+    def _insert(self, fields: dict, d) -> None:
+        names = [n for n, c in fields.items() if (c.value or "") != ""]
+        if not names:
+            notify("Fill in at least one field", "err")
             return
-        vals = [camps[n].value for n in noms]
-        sql = (f"INSERT INTO {_cita(self.taula)} "
-               f"({', '.join(_cita(n) for n in noms)}) "
-               f"VALUES ({', '.join('?' * len(noms))})")
+        vals = [fields[n].value for n in names]
+        sql = (f"INSERT INTO {_quote(self.table)} "
+               f"({', '.join(_quote(n) for n in names)}) "
+               f"VALUES ({', '.join('?' * len(names))})")
         try:
             with _conn() as c:
                 c.execute(sql, vals)
         except sqlite3.Error as e:
-            avis(str(e), "err")
+            notify(str(e), "err")
             return
         d.close()
-        avis("Fila afegida")
-        self.pinta_lateral()
-        self.pinta_principal()
+        notify("Row added")
+        self.draw_sidebar()
+        self.draw_main()
 
-    def dialeg_edita_fila(self, fila: dict) -> None:
-        cols = columnes(self.taula)
-        d = self._dialeg("Editar fila")
-        camps: dict[str, Any] = {}
+    def dialog_edit_row(self, row: dict) -> None:
+        cols = columns(self.table)
+        d = self._dialog("Edit row")
+        fields: dict[str, Any] = {}
         with d, d.default_slot.children[0]:
             for c in cols:
                 n = c["name"]
-                camps[n] = ui.input(
-                    label=n, value="" if fila.get(n) is None else str(fila.get(n))
+                fields[n] = ui.input(
+                    label=n, value="" if row.get(n) is None else str(row.get(n))
                 ).props("outlined dense").classes("w-full")
             with ui.row().classes("w-full justify-end gap-2 pt-3"):
-                boto("Cancel·lar", d.close)
-                boto("Desar", lambda: self._actualitza(camps, fila, d), tipus="primari")
+                button("Cancel", d.close)
+                button("Save", lambda: self._update(fields, row, d), kind="primary")
         d.open()
 
-    def _actualitza(self, camps: dict, fila: dict, d) -> None:
-        sets = ", ".join(f"{_cita(n)} = ?" for n in camps)
-        vals = [c.value for c in camps.values()]
+    def _update(self, fields: dict, row: dict, d) -> None:
+        sets = ", ".join(f"{_quote(n)} = ?" for n in fields)
+        vals = [c.value for c in fields.values()]
         try:
             with _conn() as c:
-                # Per rowid i no per clau primària: funciona encara que la
-                # taula no en tingui, i encara que l'usuari editi la clau.
+                # By rowid, not primary key: works even if the table has none,
+                # and even if the user edits the key itself.
                 c.execute(
-                    f"UPDATE {_cita(self.taula)} SET {sets} WHERE rowid = ?",
-                    [*vals, fila["_rowid"]],
+                    f"UPDATE {_quote(self.table)} SET {sets} WHERE rowid = ?",
+                    [*vals, row["_rowid"]],
                 )
         except sqlite3.Error as e:
-            avis(str(e), "err")
+            notify(str(e), "err")
             return
         d.close()
-        avis("Fila desada")
-        self.pinta_principal()
+        notify("Row saved")
+        self.draw_main()
 
-    def confirma_esborrar(self, fila: dict) -> None:
-        d = self._dialeg("Esborrar aquesta fila?")
+    def confirm_delete(self, row: dict) -> None:
+        d = self._dialog("Delete this row?")
         with d, d.default_slot.children[0]:
-            ui.label("No es pot desfer.").style(f"color:{C['dim']};font-size:13px")
+            ui.label("This cannot be undone.").style(f"color:{C['dim']};font-size:13px")
             with ui.row().classes("w-full justify-end gap-2 pt-3"):
-                boto("Cancel·lar", d.close)
-                boto("Esborrar", lambda: self._esborra(fila, d), tipus="perill")
+                button("Cancel", d.close)
+                button("Delete", lambda: self._delete(row, d), kind="danger")
         d.open()
 
-    def _esborra(self, fila: dict, d) -> None:
+    def _delete(self, row: dict, d) -> None:
         try:
             with _conn() as c:
-                c.execute(f"DELETE FROM {_cita(self.taula)} WHERE rowid = ?",
-                          (fila["_rowid"],))
+                c.execute(f"DELETE FROM {_quote(self.table)} WHERE rowid = ?",
+                          (row["_rowid"],))
         except sqlite3.Error as e:
-            avis(str(e), "err")
+            notify(str(e), "err")
             return
         d.close()
-        avis("Fila esborrada")
-        self.pinta_lateral()
-        self.pinta_principal()
+        notify("Row deleted")
+        self.draw_sidebar()
+        self.draw_main()
 
-    def dialeg_nova_columna(self) -> None:
-        d = self._dialeg(f"Afegir columna a {self.taula}")
+    def dialog_new_column(self) -> None:
+        d = self._dialog(f"Add column to {self.table}")
         with d, d.default_slot.children[0]:
-            nom = ui.input(label="Nom").props("outlined dense").classes("w-full")
-            tipus = ui.select(
+            name = ui.input(label="Name").props("outlined dense").classes("w-full")
+            col_type = ui.select(
                 ["TEXT", "INTEGER", "REAL", "BLOB", "NUMERIC"], value="TEXT",
-                label="Tipus",
+                label="Type",
             ).props("outlined dense").classes("w-full")
-            defecte = ui.input(label="Valor per defecte (opcional)").props(
+            default = ui.input(label="Default value (optional)").props(
                 "outlined dense").classes("w-full")
             with ui.row().classes("w-full justify-end gap-2 pt-3"):
-                boto("Cancel·lar", d.close)
-                boto("Afegir", lambda: self._afegeix_columna(
-                    nom.value, tipus.value, defecte.value, d), tipus="primari")
+                button("Cancel", d.close)
+                button("Add", lambda: self._add_column(
+                    name.value, col_type.value, default.value, d), kind="primary")
         d.open()
 
-    def _afegeix_columna(self, nom: str, tipus: str, defecte: str, d) -> None:
-        if not _nom_valid(nom):
-            avis("Nom no vàlid: lletres, números i guions baixos", "err")
+    def _add_column(self, name: str, col_type: str, default: str, d) -> None:
+        if not _valid_name(name):
+            notify("Invalid name: letters, digits and underscores", "err")
             return
-        sql = f"ALTER TABLE {_cita(self.taula)} ADD COLUMN {_cita(nom)} {tipus}"
-        if defecte:
+        sql = f"ALTER TABLE {_quote(self.table)} ADD COLUMN {_quote(name)} {col_type}"
+        if default:
             sql += " DEFAULT ?"
         try:
             with _conn() as c:
-                c.execute(sql, (defecte,) if defecte else ())
+                c.execute(sql, (default,) if default else ())
         except sqlite3.Error as e:
-            avis(str(e), "err")
+            notify(str(e), "err")
             return
         d.close()
-        avis(f"Columna {nom} afegida")
-        self.pinta_principal()
+        notify(f"Column {name} added")
+        self.draw_main()
 
-    def dialeg_nova_taula(self) -> None:
-        d = self._dialeg("Nova taula")
-        files_col: list[dict] = []
+    def dialog_new_table(self) -> None:
+        d = self._dialog("New table")
+        col_rows: list[dict] = []
         with d, d.default_slot.children[0]:
-            nom = ui.input(label="Nom de la taula").props(
+            name = ui.input(label="Table name").props(
                 "outlined dense").classes("w-full")
-            ui.label("COLUMNES").style(
+            ui.label("COLUMNS").style(
                 f"color:{C['faint']};font-size:11px;letter-spacing:.09em;"
                 "font-weight:600;padding-top:8px")
             cont = ui.column().classes("w-full gap-2")
 
-            def afegeix_fila(nom_def: str = "", tipus_def: str = "TEXT",
-                             pk: bool = False) -> None:
+            def add_row(name_def: str = "", type_def: str = "TEXT",
+                        pk: bool = False) -> None:
                 with cont:
-                    with ui.row().classes("w-full items-center gap-2") as fila:
-                        n = ui.input(placeholder="nom").props(
+                    with ui.row().classes("w-full items-center gap-2") as row:
+                        n = ui.input(placeholder="name").props(
                             "outlined dense").style("flex:1")
-                        n.value = nom_def
+                        n.value = name_def
                         t = ui.select(["TEXT", "INTEGER", "REAL", "BLOB"],
-                                      value=tipus_def).props(
+                                      value=type_def).props(
                             "outlined dense").style("width:110px")
                         k = ui.checkbox("PK", value=pk).props("dense")
                         ui.button(icon="close", on_click=lambda: (
-                            fila.delete(), files_col.remove(ref))
+                            row.delete(), col_rows.remove(ref))
                         ).props("flat dense round size=sm color=grey-7").classes(
                             "cursor-pointer")
                         ref = {"n": n, "t": t, "k": k}
-                        files_col.append(ref)
+                        col_rows.append(ref)
 
-            afegeix_fila("id", "INTEGER", True)
-            afegeix_fila("nom", "TEXT")
-            boto("Afegir columna", lambda: afegeix_fila(), icon="add")
+            add_row("id", "INTEGER", True)
+            add_row("name", "TEXT")
+            button("Add column", lambda: add_row(), icon="add")
 
             with ui.row().classes("w-full justify-end gap-2 pt-3"):
-                boto("Cancel·lar", d.close)
-                boto("Crear", lambda: self._crea_taula(nom.value, files_col, d),
-                     tipus="primari")
+                button("Cancel", d.close)
+                button("Create", lambda: self._create_table(name.value, col_rows, d),
+                       kind="primary")
         d.open()
 
-    def _crea_taula(self, nom: str, cols: list[dict], d) -> None:
-        if not _nom_valid(nom):
-            avis("Nom de taula no vàlid", "err")
+    def _create_table(self, name: str, cols: list[dict], d) -> None:
+        if not _valid_name(name):
+            notify("Invalid table name", "err")
             return
-        definicions = []
+        definitions = []
         for c in cols:
             cn = (c["n"].value or "").strip()
             if not cn:
                 continue
-            if not _nom_valid(cn):
-                avis(f"Nom de columna no vàlid: {cn}", "err")
+            if not _valid_name(cn):
+                notify(f"Invalid column name: {cn}", "err")
                 return
-            definicions.append(
-                f"{_cita(cn)} {c['t'].value}" + (" PRIMARY KEY" if c["k"].value else "")
+            definitions.append(
+                f"{_quote(cn)} {c['t'].value}" + (" PRIMARY KEY" if c["k"].value else "")
             )
-        if not definicions:
-            avis("Cal almenys una columna", "err")
+        if not definitions:
+            notify("At least one column is required", "err")
             return
         try:
             with _conn() as c:
-                c.execute(f"CREATE TABLE {_cita(nom)} ({', '.join(definicions)})")
+                c.execute(f"CREATE TABLE {_quote(name)} ({', '.join(definitions)})")
         except sqlite3.Error as e:
-            avis(str(e), "err")
+            notify(str(e), "err")
             return
         d.close()
-        avis(f"Taula {nom} creada")
-        self.obre(nom)
+        notify(f"Table {name} created")
+        self.open(name)
 
-    def confirma_drop(self) -> None:
-        d = self._dialeg(f"Esborrar la taula {self.taula}?")
+    def confirm_drop(self) -> None:
+        d = self._dialog(f"Drop table {self.table}?")
         with d, d.default_slot.children[0]:
-            ui.label("S'esborren totes les files i no es pot desfer.").style(
+            ui.label("Every row is deleted and this cannot be undone.").style(
                 f"color:{C['dim']};font-size:13px")
             with ui.row().classes("w-full justify-end gap-2 pt-3"):
-                boto("Cancel·lar", d.close)
-                boto("Esborrar la taula", lambda: self._drop(d), tipus="perill")
+                button("Cancel", d.close)
+                button("Drop table", lambda: self._drop(d), kind="danger")
         d.open()
 
     def _drop(self, d) -> None:
         try:
             with _conn() as c:
-                c.execute(f"DROP TABLE {_cita(self.taula)}")
+                c.execute(f"DROP TABLE {_quote(self.table)}")
         except sqlite3.Error as e:
-            avis(str(e), "err")
+            notify(str(e), "err")
             return
         d.close()
-        avis("Taula esborrada")
-        self.taula = None
-        self.pinta_lateral()
-        self.pinta_principal()
+        notify("Table dropped")
+        self.table = None
+        self.draw_sidebar()
+        self.draw_main()
 
 
-def _nom_valid(nom: str) -> bool:
-    """Els noms nous es restringeixen, encara que _cita() ja els protegeixi.
+def _valid_name(name: str) -> bool:
+    """Restrict new names even though _quote() already protects them.
 
-    Un nom amb cometes o espais és legal a SQLite però fa la vida impossible
-    després; val més no deixar-los crear.
+    A name with quotes or spaces is legal in SQLite but a nuisance afterwards,
+    so better not to allow creating one.
     """
-    return bool(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,62}", (nom or "").strip()))
+    return bool(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,62}", (name or "").strip()))
 
 
 # --------------------------------------------------------------------------
-# Pàgina
+# Page
 # --------------------------------------------------------------------------
-def _estat_bd() -> dict[str, Any]:
-    llista = taules()
-    return {"taules": len(llista), "files": sum(t["files"] for t in llista),
+def _db_status() -> dict[str, Any]:
+    listing = tables()
+    return {"tables": len(listing), "rows": sum(t["rows"] for t in listing),
             "kb": memory.stats()["dbBytes"] / 1024}
 
 
-class _Porta(BaseHTTPMiddleware):
-    """Deixa passar cap a /entrar i cap als fitxers estàtics de NiceGUI.
+class _Gate(BaseHTTPMiddleware):
+    """Lets /login and NiceGUI's static files through; the rest needs the password.
 
-    La resta del panell demana haver posat la contrasenya. Va com a middleware
-    i no com a dependència perquè el WebSocket de NiceGUI no passa per les
-    dependències de FastAPI.
+    Middleware and not a FastAPI dependency because NiceGUI's WebSocket does not
+    go through dependencies.
     """
 
     async def dispatch(self, request, call_next):
-        cami = request.url.path
-        if not cami.startswith(PREFIX) or cami.startswith(f"{PREFIX}/_nicegui"):
+        path = request.url.path
+        if not path.startswith(PREFIX) or path.startswith(f"{PREFIX}/_nicegui"):
             return await call_next(request)
-        if cami.rstrip("/") == f"{PREFIX}/entrar":
+        if path.rstrip("/") == f"{PREFIX}/login":
             return await call_next(request)
-        if not nicegui_app.storage.user.get("dins"):
-            return RedirectResponse(f"{PREFIX}/entrar")
+        if not nicegui_app.storage.user.get("authed"):
+            return RedirectResponse(f"{PREFIX}/login")
         return await call_next(request)
 
 
-def construeix(mount_path: str = "/admin") -> None:
-    """Munta el panell dins de l'app de FastAPI que li passi main.py."""
+def build(mount_path: str = "/admin") -> None:
+    """Mount the panel inside the FastAPI app that main.py hands over."""
     global PREFIX
     PREFIX = mount_path.rstrip("/")
-    nicegui_app.add_middleware(_Porta)
+    nicegui_app.add_middleware(_Gate)
 
-    @ui.page("/entrar")
-    def entrar() -> None:
+    @ui.page("/login")
+    def login() -> None:
         ui.add_head_html(f"<style>{CSS}</style>")
         ui.dark_mode().enable()
 
-        def prova() -> None:
-            # compare_digest per no filtrar la contrasenya pel temps que triga
-            # a fallar la comparació.
-            if secrets.compare_digest(clau.value or "", CONTRASENYA):
-                nicegui_app.storage.user["dins"] = True
+        def attempt() -> None:
+            # compare_digest so the password does not leak through how long the
+            # comparison takes to fail.
+            if secrets.compare_digest(key.value or "", PASSWORD):
+                nicegui_app.storage.user["authed"] = True
                 ui.navigate.to("/")
             else:
                 error.set_visibility(True)
@@ -824,77 +814,77 @@ def construeix(mount_path: str = "/admin") -> None:
             ):
                 with ui.row().classes("items-center gap-2 pb-1"):
                     ui.icon("storage").style(f"color:{C['accent']};font-size:20px")
-                    ui.label("Bonsai · base de dades").style(
+                    ui.label("Bonsai · database").style(
                         f"color:{C['fg']};font-weight:600")
-                ui.label("Accés d'administració").style(
+                ui.label("Admin access").style(
                     f"color:{C['faint']};font-size:13px;padding-bottom:14px")
-                clau = ui.input(label="Contrasenya", password=True).props(
+                key = ui.input(label="Password", password=True).props(
                     "outlined dense autofocus").classes("w-full")
-                clau.on("keydown.enter", prova)
-                error = ui.label("Contrasenya incorrecta").style(
+                key.on("keydown.enter", attempt)
+                error = ui.label("Wrong password").style(
                     f"color:{C['danger']};font-size:13px;padding-top:8px")
                 error.set_visibility(False)
                 with ui.row().classes("w-full pt-4"):
-                    boto("Entrar", prova, tipus="primari").classes("w-full")
+                    button("Sign in", attempt, kind="primary").classes("w-full")
 
     @ui.page("/")
-    def pagina() -> None:
+    def page() -> None:
         ui.add_head_html(f"<style>{CSS}</style>")
         ui.query("body").style(f"background:{C['bg']}")
         ui.dark_mode().enable()
 
         p = Panel()
-        est = _estat_bd()
+        status = _db_status()
 
-        def surt() -> None:
+        def logout() -> None:
             nicegui_app.storage.user.clear()
-            ui.navigate.to("/entrar")
+            ui.navigate.to("/login")
 
-        # Capçalera
+        # Header
         with ui.row().classes("w-full items-center gap-4 px-6 py-3").style(
             f"background:{C['surface']};border-bottom:1px solid {C['line']}"
         ):
             with ui.row().classes("items-center gap-2"):
                 ui.icon("storage").style(f"color:{C['accent']};font-size:20px")
-                ui.label("Bonsai · base de dades").style(
+                ui.label("Bonsai · database").style(
                     f"color:{C['fg']};font-weight:600;letter-spacing:-.01em")
             ui.space()
-            for valor, etiqueta in (
-                (f"{est['taules']}", "taules"),
-                (f"{est['files']:,}", "files"),
-                (f"{est['kb']:.0f} KB", "mida"),
+            for value, label in (
+                (f"{status['tables']}", "tables"),
+                (f"{status['rows']:,}", "rows"),
+                (f"{status['kb']:.0f} KB", "size"),
             ):
                 with ui.column().classes("items-end gap-0"):
-                    ui.label(valor).style(
+                    ui.label(value).style(
                         f"color:{C['fg']};font-size:14px;font-weight:600;"
                         "font-variant-numeric:tabular-nums;line-height:1.2")
-                    ui.label(etiqueta).style(
+                    ui.label(label).style(
                         f"color:{C['faint']};font-size:10px;letter-spacing:.07em;"
                         "text-transform:uppercase")
             ui.element("div").style(f"width:1px;height:26px;background:{C['line']}")
-            ui.link("Provar", "/provar").style(
+            ui.link("Try it", "/provar").style(
                 f"color:{C['dim']};font-size:13px;text-decoration:none").classes(
                 "cursor-pointer hover:underline")
-            ui.button(icon="logout", on_click=surt).props(
+            ui.button(icon="logout", on_click=logout).props(
                 "flat dense round size=sm color=grey-7").classes("cursor-pointer"
-                ).tooltip("Sortir")
+                ).tooltip("Sign out")
 
-        # Cos
-        with ui.row().classes("cos w-full gap-0 items-stretch").style(
+        # Body
+        with ui.row().classes("body-row w-full gap-0 items-stretch").style(
             "min-height:calc(100vh - 57px)"
         ):
-            with ui.column().classes("lateral gap-0 p-3").style(
+            with ui.column().classes("sidebar gap-0 p-3").style(
                 f"width:250px;flex:none;border-right:1px solid {C['line']};"
                 f"background:{C['surface']}"
             ):
-                p.cont_lateral = ui.column().classes("w-full gap-1")
-            p.cont_principal = ui.column().classes("principal gap-0").style(
+                p.sidebar_container = ui.column().classes("w-full gap-1")
+            p.main_container = ui.column().classes("main gap-0").style(
                 "flex:1;min-width:0")
 
-        p.pinta_lateral()
-        # Obre la primera taula: el cas normal és que només n'hi hagi una.
-        primera = taules()
-        if primera:
-            p.obre(primera[0]["nom"])
+        p.draw_sidebar()
+        # Open the first table: normally there is only one.
+        first = tables()
+        if first:
+            p.open(first[0]["name"])
         else:
-            p.pinta_principal()
+            p.draw_main()

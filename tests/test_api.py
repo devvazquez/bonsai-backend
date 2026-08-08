@@ -1,14 +1,14 @@
-"""Prueba de /ask de punta a punta, sin gastar un solo token de Groq.
+"""End-to-end test of /ask without spending a single Groq token.
 
-    python test_ask.py        (sale con código 1 si algo falla)
+    python tests/test_api.py        (exits with code 1 if anything fails)
 
 
-Se sustituye el transporte HTTP compartido (vision.get_client) por uno de
-mentira que responde lo que respondería Groq y, de paso, guarda lo que se le
-mandó. Así se comprueba el payload de verdad: los dos turnos del preámbulo, la
-cabecera WAV que se le pone al PCM del micro y el modelo de Whisper.
+The shared HTTP transport (vision.get_client) is swapped for a fake one that
+answers what Groq would answer and records what was sent to it. That way the
+real payload is checked: the two preamble turns, the WAV header put on the
+mic's PCM and the Whisper model.
 
-Piper sí es real: es local y no gasta cuota de nadie.
+Piper is real: it is local and spends nobody's quota.
 """
 import asyncio
 import base64
@@ -19,39 +19,39 @@ import sys
 import tempfile
 import time
 
-os.environ.setdefault("GROQ_API_KEY", "clau-de-mentida")
+os.environ.setdefault("GROQ_API_KEY", "fake-key")
 os.environ["BONSAI_DB_PATH"] = tempfile.mkdtemp(prefix="ask-") + "/bonsai.db"
 os.environ["BONSAI_CAPTURES_DIR"] = tempfile.mkdtemp(prefix="captures-")
-# La arrel del repositori, per poder importar el paquet `app`.
+# The repo root, so the `app` package can be imported.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import httpx
 from app import main, memory, stt, tts, vision
 
 
-def usa(transporte):
-    """Cambia el cliente HTTP en los dos sitios que lo tienen importado.
+def use(transport):
+    """Swaps the HTTP client in both modules that imported it.
 
-    stt hace `from vision import get_client`, así que se queda con la función
-    de entonces: tocar solo vision.get_client no le llega.
+    stt does `from vision import get_client`, so it keeps the function it saw
+    back then: patching only vision.get_client does not reach it.
     """
-    cliente = httpx.AsyncClient(transport=httpx.MockTransport(transporte))
-    for modulo in (vision, stt):
-        modulo.get_client = lambda c=cliente: c
+    client = httpx.AsyncClient(transport=httpx.MockTransport(transport))
+    for module in (vision, stt):
+        module.get_client = lambda c=client: c
 
-enviadas = []
-fallos = []
+sent = []
+failures = []
 
 
-def check(nom, cond, extra=""):
-    (print if cond else fallos.append)(("OK   " if cond else "FALLA ") + nom
-                                       + (f"  {extra}" if extra else ""))
+def check(name, cond, extra=""):
+    (print if cond else failures.append)(("OK   " if cond else "FAIL ") + name
+                                         + (f"  {extra}" if extra else ""))
     if not cond:
-        print("FALLA " + nom + (f"  {extra}" if extra else ""))
+        print("FAIL " + name + (f"  {extra}" if extra else ""))
 
 
-def responde(request: httpx.Request) -> httpx.Response:
-    enviadas.append(request)
+def respond(request: httpx.Request) -> httpx.Response:
+    sent.append(request)
     if "audio/transcriptions" in str(request.url):
         return httpx.Response(200, json={"text": "Què diu aquest cartell?"})
     return httpx.Response(200, json={
@@ -59,30 +59,30 @@ def responde(request: httpx.Request) -> httpx.Response:
     })
 
 
-# La voz de Piper se baja ANTES de poner el transporte de mentira. Si no, la
-# descarga (que usa el mismo cliente compartido) se come la respuesta falsa de
-# Groq y deja un .onnx de 64 bytes que luego peta con un KeyError críptico.
+# The Piper voice is fetched BEFORE the fake transport is installed. Otherwise
+# the download (which uses the same shared client) eats Groq's fake answer and
+# leaves a 64-byte .onnx that later blows up with a cryptic KeyError.
 asyncio.run(tts.ensure_voice(tts.voice_for("ca")))
 
-usa(responde)
+use(respond)
 
-# Una imagen JPEG mínima de verdad (firma incluida, para probar sniff_mime) y
-# un segundo de PCM16 a 16 kHz.
-FOTO = bytes.fromhex("ffd8ffe000104a46494600010100000100010000") + b"\x00" * 500
-PCM = b"\x11\x22" * 16000        # 1,0 s a 16 kHz
-
-
-def trama(foto: bytes, audio: bytes) -> bytes:
-    return struct.pack(">I", len(foto)) + foto + audio
+# A real minimal JPEG (signature included, to exercise sniff_mime) and one
+# second of PCM16 at 16 kHz.
+PHOTO = bytes.fromhex("ffd8ffe000104a46494600010100000100010000") + b"\x00" * 500
+PCM = b"\x11\x22" * 16000        # 1.0 s at 16 kHz
 
 
-async def socket_de_verdad():
-    """La subida en trozos, por un socket de verdad y no por ASGI.
+def frame(photo: bytes, audio: bytes) -> bytes:
+    return struct.pack(">I", len(photo)) + photo + audio
 
-    El resto de la prueba usa httpx.ASGITransport, que llama a la app
-    directamente: eso comprueba que el código se comporta, pero no que uvicorn
-    entregue los trozos según llegan. El firmware manda `Transfer-Encoding:
-    chunked` sin `Content-Length`, que es justo lo que se rompió una vez.
+
+async def real_socket():
+    """The chunked upload over a real socket instead of ASGI.
+
+    The rest of the test uses httpx.ASGITransport, which calls the app
+    directly: that checks the code behaves, but not that uvicorn delivers the
+    chunks as they arrive. The firmware sends `Transfer-Encoding: chunked`
+    without `Content-Length`, which is exactly what broke once.
     """
     import socket
     import threading
@@ -90,376 +90,375 @@ async def socket_de_verdad():
     import uvicorn
 
     sock = socket.socket()
-    sock.bind(("127.0.0.1", 0))          # puerto efímero: nada de puertos fijos
-    puerto = sock.getsockname()[1]
+    sock.bind(("127.0.0.1", 0))          # ephemeral port: no fixed ports
+    port = sock.getsockname()[1]
     sock.close()
 
-    config = uvicorn.Config(main.app, host="127.0.0.1", port=puerto,
+    config = uvicorn.Config(main.app, host="127.0.0.1", port=port,
                             log_level="warning", lifespan="off")
-    servidor = uvicorn.Server(config)
-    hilo = threading.Thread(target=servidor.run, daemon=True)
-    hilo.start()
+    server = uvicorn.Server(config)
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
     for _ in range(100):
         await asyncio.sleep(0.05)
-        if servidor.started:
+        if server.started:
             break
 
-    antes = len(memory.list_captures())
-    s = socket.create_connection(("127.0.0.1", puerto), 5)
+    before = len(memory.list_captures())
+    s = socket.create_connection(("127.0.0.1", port), 5)
     s.sendall(
         f"POST /api/v1/ask?deviceId=socket&micRate=16000 HTTP/1.1\r\n"
-        f"Host: 127.0.0.1:{puerto}\r\n"
+        f"Host: 127.0.0.1:{port}\r\n"
         "Content-Type: application/octet-stream\r\n"
         "Transfer-Encoding: chunked\r\n\r\n".encode()
     )
 
-    def trozo(d: bytes) -> bytes:
+    def chunk(d: bytes) -> bytes:
         return f"{len(d):x}\r\n".encode() + d + b"\r\n"
 
-    s.sendall(trozo(struct.pack(">I", len(FOTO)) + FOTO))
+    s.sendall(chunk(struct.pack(">I", len(PHOTO)) + PHOTO))
 
-    # Se habla medio segundo en trozos de 50 ms, como haría el micro.
-    guardada_mientras_hablaba = False
+    # Half a second of speech in 50 ms chunks, like the mic would send it.
+    saved_while_talking = False
     for _ in range(10):
         await asyncio.sleep(0.05)
-        s.sendall(trozo(b"\x11\x22" * 800))
-        if len(memory.list_captures()) > antes:
-            guardada_mientras_hablaba = True
+        s.sendall(chunk(b"\x11\x22" * 800))
+        if len(memory.list_captures()) > before:
+            saved_while_talking = True
     s.sendall(b"0\r\n\r\n")
 
-    respuesta = b""
-    while b"\r\n\r\n" not in respuesta:
-        datos = await asyncio.to_thread(s.recv, 4096)
-        if not datos:
+    response = b""
+    while b"\r\n\r\n" not in response:
+        data = await asyncio.to_thread(s.recv, 4096)
+        if not data:
             break
-        respuesta += datos
+        response += data
     s.close()
-    cabeceras = respuesta.split(b"\r\n\r\n")[0].decode(errors="replace")
+    headers = response.split(b"\r\n\r\n")[0].decode(errors="replace")
 
-    check("por un socket real, chunked y sin Content-Length -> 200",
-          cabeceras.startswith("HTTP/1.1 200"), cabeceras.splitlines()[0])
-    check("y la respuesta también vuelve chunked",
-          "transfer-encoding: chunked" in cabeceras.lower())
-    check("la foto se guarda mientras el micro todavía sube",
-          guardada_mientras_hablaba)
+    check("over a real socket, chunked and without Content-Length -> 200",
+          headers.startswith("HTTP/1.1 200"), headers.splitlines()[0])
+    check("and the response comes back chunked too",
+          "transfer-encoding: chunked" in headers.lower())
+    check("the photo is saved while the mic is still uploading",
+          saved_while_talking)
 
-    servidor.should_exit = True
-    hilo.join(timeout=5)
+    server.should_exit = True
+    thread.join(timeout=5)
 
 
-async def principal():
+async def main_test():
     memory.init_db()
-    transporte = httpx.ASGITransport(app=main.app)
-    # El prefijo de versión va en base_url, así que las rutas de abajo siguen
-    # escribiéndose /ask, /look, /speak...
-    async with httpx.AsyncClient(transport=transporte,
+    transport = httpx.ASGITransport(app=main.app)
+    # The version prefix lives in base_url, so the paths below are still
+    # written as /ask, /look, /speak...
+    async with httpx.AsyncClient(transport=transport,
                                  base_url=f"http://test{main.API_PREFIX}",
                                  timeout=60) as c:
 
         # ---------------------------------------------------------------
-        # 1. El camino feliz
+        # 1. The happy path
         # ---------------------------------------------------------------
         r = await c.post("/ask?deviceId=ulleres-01&audioFormat=pcm16&sampleRate=16000",
-                         content=trama(FOTO, PCM),
+                         content=frame(PHOTO, PCM),
                          headers={"Content-Type": "application/octet-stream"})
-        check("/ask responde 200", r.status_code == 200, r.text[:200])
+        check("/ask returns 200", r.status_code == 200, r.text[:200])
         if r.status_code != 200:
             return
 
         text = base64.b64decode(r.headers["x-bonsai-text"]).decode()
         trans = base64.b64decode(r.headers["x-bonsai-transcript"]).decode()
-        check("devuelve la transcripción", trans == "Què diu aquest cartell?", trans)
-        check("devuelve la respuesta", text == "Diu «Prohibit el pas».", text)
-        check("el cuerpo es audio de verdad", len(r.content) > 10000,
+        check("returns the transcript", trans == "Què diu aquest cartell?", trans)
+        check("returns the answer", text == "Diu «Prohibit el pas».", text)
+        check("the body is real audio", len(r.content) > 10000,
               f"{len(r.content)} bytes")
-        check("formato pcm16 a 16 kHz",
+        check("pcm16 format at 16 kHz",
               r.headers["x-bonsai-format"] == "pcm16"
               and r.headers["x-bonsai-rate"] == "16000")
-        check("dice el modelo de whisper",
+        check("reports the whisper model",
               r.headers["x-bonsai-stt-model"] == "whisper-large-v3-turbo",
               r.headers.get("x-bonsai-stt-model", "-"))
-        check("dice cuánto audio era",
+        check("reports how much audio it was",
               r.headers["x-bonsai-audio-secs"] == "1.00",
               r.headers.get("x-bonsai-audio-secs"))
-        check("expone las cabeceras a JS",
+        check("exposes the headers to JS",
               "X-Bonsai-Transcript" in r.headers["access-control-expose-headers"])
 
         # ---------------------------------------------------------------
-        # 2. Lo que se le mandó a Groq
+        # 2. What was actually sent to Groq
         # ---------------------------------------------------------------
-        stt_req, vis_req = enviadas[0], enviadas[1]
-        check("primero transcribe, luego describe",
+        stt_req, vis_req = sent[0], sent[1]
+        check("transcribes first, then describes",
               "transcriptions" in str(stt_req.url)
               and "chat/completions" in str(vis_req.url))
 
-        cuerpo_stt = stt_req.content
-        check("al PCM se le pone cabecera WAV", b"RIFF" in cuerpo_stt[:600]
-              and b"WAVEfmt" in cuerpo_stt[:600])
-        check("con la longitud correcta, no 0xFFFFFFFF",
-              struct.pack("<I", 32000) in cuerpo_stt[:600])
-        check("pide whisper turbo", b"whisper-large-v3-turbo" in cuerpo_stt)
-        check("le dice el idioma", b'name="language"' in cuerpo_stt
-              and b"ca" in cuerpo_stt)
+        stt_body = stt_req.content
+        check("the PCM gets a WAV header", b"RIFF" in stt_body[:600]
+              and b"WAVEfmt" in stt_body[:600])
+        check("with the real length, not 0xFFFFFFFF",
+              struct.pack("<I", 32000) in stt_body[:600])
+        check("asks for whisper turbo", b"whisper-large-v3-turbo" in stt_body)
+        check("tells it the language", b'name="language"' in stt_body
+              and b"ca" in stt_body)
 
         payload = json.loads(vis_req.content)
         msgs = payload["messages"]
-        check("4 mensajes: system + los dos turnos + la foto", len(msgs) == 4,
+        check("4 messages: system + the two turns + the photo", len(msgs) == 4,
               str([m["role"] for m in msgs]))
-        check("turno 1: user «Hey Bonsai!»",
+        check("turn 1: user «Hey Bonsai!»",
               msgs[1] == {"role": "user", "content": "Hey Bonsai!"}, str(msgs[1]))
-        check("turno 2: assistant «Diga’m!» (lo que suena en las gafas)",
+        check("turn 2: assistant «Diga’m!» (what the glasses play)",
               msgs[2] == {"role": "assistant", "content": "Diga’m!"}, str(msgs[2]))
-        check("el preámbulo va ANTES del prompt y la imagen",
+        check("the preamble goes BEFORE the prompt and the image",
               msgs[3]["role"] == "user"
               and msgs[3]["content"][0]["text"] == "Què diu aquest cartell?"
               and msgs[3]["content"][1]["type"] == "image_url")
-        check("la imagen va como jpeg detectado",
+        check("the image goes as detected jpeg",
               msgs[3]["content"][1]["image_url"]["url"].startswith(
                   "data:image/jpeg;base64,"))
-        check("qwen es el modelo de visión", payload["model"].startswith("qwen"),
+        check("qwen is the vision model", payload["model"].startswith("qwen"),
               payload["model"])
 
         # ---------------------------------------------------------------
-        # 3. La foto se ha guardado
+        # 3. The photo has been saved
         # ---------------------------------------------------------------
         cap_id = r.headers["x-bonsai-capture-id"]
-        fila = memory.get_capture(cap_id)
-        check("hay fila en captures", fila is not None)
-        check("el fichero está en disco y pesa lo que la foto",
-              os.path.getsize(fila["image_path"]) == len(FOTO))
-        check("guarda lo que se dijo y lo que se contestó",
-              fila["transcript"] == "Què diu aquest cartell?"
-              and fila["reply"] == "Diu «Prohibit el pas».")
-        check("guarda los tiempos", fila["total_ms"] >= fila["stt_ms"] >= 0
-              and fila["vision_ms"] is not None)
-        check("guarda de qué dispositivo es", fila["device_id"] == "ulleres-01")
+        row = memory.get_capture(cap_id)
+        check("there is a row in captures", row is not None)
+        check("the file is on disk and weighs what the photo does",
+              os.path.getsize(row["image_path"]) == len(PHOTO))
+        check("stores what was said and what was answered",
+              row["transcript"] == "Què diu aquest cartell?"
+              and row["reply"] == "Diu «Prohibit el pas».")
+        check("stores the timings", row["total_ms"] >= row["stt_ms"] >= 0
+              and row["vision_ms"] is not None)
+        check("stores which device it came from", row["device_id"] == "ulleres-01")
 
         # ---------------------------------------------------------------
-        # 3 bis. La foto se guarda MIENTRAS todavía sube el audio
+        # 3 bis. The photo is saved WHILE the audio is still uploading
         # ---------------------------------------------------------------
-        # Esto estuvo mal una vez: se leía el cuerpo entero y solo entonces se
-        # guardaba, así que subir en trozos no servía de nada. Aquí el cuerpo
-        # es un generador que mira el disco antes de soltar el audio.
-        antes = len(memory.list_captures())
-        visto = {}
+        # This was wrong once: the whole body was read and only then saved, so
+        # chunked upload bought nothing. Here the body is a generator that
+        # checks the disk before releasing the audio.
+        before = len(memory.list_captures())
+        seen = {}
 
-        async def cuerpo_a_trozos():
-            yield struct.pack(">I", len(FOTO)) + FOTO
-            # Ceder el control para que el servidor procese lo ya enviado.
+        async def chunked_body():
+            yield struct.pack(">I", len(PHOTO)) + PHOTO
+            # Yield control so the server can process what was already sent.
             for _ in range(20):
                 await asyncio.sleep(0.01)
-                if len(memory.list_captures()) > antes:
+                if len(memory.list_captures()) > before:
                     break
-            visto["guardada_abans"] = len(memory.list_captures()) > antes
+            seen["saved_before"] = len(memory.list_captures()) > before
             yield PCM
 
-        r = await c.post("/ask?deviceId=solapada", content=cuerpo_a_trozos())
-        check("con el cuerpo en trozos responde 200", r.status_code == 200,
+        r = await c.post("/ask?deviceId=solapada", content=chunked_body())
+        check("with a chunked body it returns 200", r.status_code == 200,
               r.text[:150])
-        check("la foto ya estaba guardada antes de mandar el audio",
-              visto.get("guardada_abans") is True)
+        check("the photo was already saved before sending the audio",
+              seen.get("saved_before") is True)
 
         # ---------------------------------------------------------------
-        # 4. /look sigue sin preámbulo (no se ha cambiado su comportamiento)
+        # 4. /look still has no preamble (its behaviour is unchanged)
         # ---------------------------------------------------------------
-        enviadas.clear()
+        sent.clear()
         r = await c.post("/look", json={
-            "image": base64.b64encode(FOTO).decode(), "deviceId": "ulleres-01",
+            "image": base64.b64encode(PHOTO).decode(), "deviceId": "ulleres-01",
             "audioFormat": "wav",
         })
-        check("/look sigue funcionando", r.status_code == 200, r.text[:200])
-        msgs = json.loads(enviadas[0].content)["messages"]
-        check("/look NO lleva el preámbulo", len(msgs) == 2,
+        check("/look still works", r.status_code == 200, r.text[:200])
+        msgs = json.loads(sent[0].content)["messages"]
+        check("/look does NOT carry the preamble", len(msgs) == 2,
               str([m["role"] for m in msgs]))
-        check("/look devuelve WAV", r.content[:4] == b"RIFF")
+        check("/look returns WAV", r.content[:4] == b"RIFF")
 
         # ---------------------------------------------------------------
-        # 4 bis. /speak sirve para fabricar el clip del "Diga'm"
+        # 4 bis. /speak is what makes the "Diga'm" clip
         # ---------------------------------------------------------------
         r = await c.post("/speak?text=Diga%E2%80%99m!&audioFormat=pcm16&sampleRate=16000")
-        check("/speak en pcm16 a 16 kHz", r.status_code == 200
+        check("/speak in pcm16 at 16 kHz", r.status_code == 200
               and r.headers["x-bonsai-format"] == "pcm16"
               and r.headers["x-bonsai-rate"] == "16000"
-              and r.content[:4] != b"RIFF",       # crudo, sin cabecera
+              and r.content[:4] != b"RIFF",       # raw, no header
               f"{r.status_code} {r.headers.get('x-bonsai-format')}")
         r = await c.post("/speak?text=hola")
-        check("/speak sin decir formato sigue dando WAV",
+        check("/speak without a format still gives WAV",
               r.status_code == 200 and r.content[:4] == b"RIFF")
 
-        # Las longitudes de la cabecera, que es lo que hacía que /docs (y
-        # cualquier <audio>) enseñara 0:00 y no sonara nada: con 0xFFFFFFFF el
-        # reproductor no puede saber cuánto dura.
-        riff, datos = (struct.unpack("<I", r.content[o:o + 4])[0] for o in (4, 40))
-        check("el WAV lleva las longitudes de verdad, no 0xFFFFFFFF",
-              riff == len(r.content) - 8 and datos == len(r.content) - 44,
-              f"riff={riff} data={datos} fichero={len(r.content)}")
-        check("y va con Content-Length, sin trocear",
+        # The header lengths, which is what made /docs (and any <audio>) show
+        # 0:00 in silence: with 0xFFFFFFFF a player cannot tell the duration.
+        riff, data_len = (struct.unpack("<I", r.content[o:o + 4])[0] for o in (4, 40))
+        check("the WAV carries the real lengths, not 0xFFFFFFFF",
+              riff == len(r.content) - 8 and data_len == len(r.content) - 44,
+              f"riff={riff} data={data_len} file={len(r.content)}")
+        check("and comes with Content-Length, unchunked",
               r.headers.get("content-length") == str(len(r.content))
               and "transfer-encoding" not in r.headers,
               str(dict(r.headers)))
 
-        # Con GET también: un <audio src="..."> del navegador (y el
-        # reproductor de /docs) pide siempre por GET, y antes se comía un 405.
-        # No se comparan los bytes con los del POST, ni la longitud: Piper mete
-        # ruido aleatorio en cada síntesis y para un "hola" la misma petición da
-        # entre 16,9 KB y 22,6 KB (medido). Lo que tiene que coincidir es el
-        # formato, no el tamaño.
+        # With GET too: a browser's <audio src="..."> (and /docs' player)
+        # always asks by GET, and used to get a 405.
+        # Bytes and length are not compared with the POST's: Piper adds random
+        # noise on every synthesis and the same "hola" gives between 16.9 KB
+        # and 22.6 KB (measured). What must match is the format, not the size.
         g = await c.get("/speak?text=hola")
-        check("/speak también responde a GET",
+        check("/speak answers GET as well",
               g.status_code == 200 and g.content[:4] == b"RIFF"
               and g.headers["content-type"] == r.headers["content-type"]
               and g.headers["x-bonsai-rate"] == r.headers["x-bonsai-rate"]
               and g.headers["x-bonsai-voice"] == r.headers["x-bonsai-voice"]
               and len(g.content) > 1000,
               f"{g.status_code}, {len(g.content)} bytes")
-        rutas = main.app.openapi()["paths"]["/api/v1/speak"]
-        check("y los dos métodos salen en /docs", sorted(rutas) == ["get", "post"],
-              str(sorted(rutas)))
+        routes = main.app.openapi()["paths"]["/api/v1/speak"]
+        check("and both methods show up in /docs", sorted(routes) == ["get", "post"],
+              str(sorted(routes)))
 
         # ---------------------------------------------------------------
-        # 4 quater. La voz sale del idioma; no se puede pedir una voz
+        # 4 quater. The voice comes from the language; it cannot be requested
         # ---------------------------------------------------------------
-        params = {q["name"] for q in rutas["get"]["parameters"]}
-        check("/speak ya no tiene parámetro voice", "voice" not in params,
+        params = {q["name"] for q in routes["get"]["parameters"]}
+        check("/speak no longer has a voice parameter", "voice" not in params,
               str(sorted(params)))
-        check("y sí tiene lang", "lang" in params)
-        campos = main.app.openapi()["components"]["schemas"]["LookRequest"]["properties"]
-        check("/look tampoco: lang sí, voice no",
-              "lang" in campos and "voice" not in campos, str(sorted(campos)))
+        check("and it does have lang", "lang" in params)
+        fields = main.app.openapi()["components"]["schemas"]["LookRequest"]["properties"]
+        check("/look neither: lang yes, voice no",
+              "lang" in fields and "voice" not in fields, str(sorted(fields)))
 
-        # Un idioma que no existe se dice, no se contesta en catalán por lo bajo.
+        # An unknown language is reported, not quietly answered in Catalan.
         r = await c.get("/speak?text=hola&lang=fr")
-        check("un idioma desconocido -> 400 con la lista",
+        check("an unknown language -> 400 with the list",
               r.status_code == 400 and "ca" in r.text, r.text[:160])
 
-        # Y el que sí existe usa la voz de tts.VOICES, sin pedirla.
+        # And a known one uses the voice from tts.VOICES, without asking.
         r = await c.get("/speak?text=hola&lang=ca")
-        check("la voz del idioma es la del mapa",
+        check("the language's voice is the one from the map",
               r.headers.get("x-bonsai-voice") == main.tts.VOICES["ca"],
-              r.headers.get("x-bonsai-voice", "(cap)"))
-        check("el esquema dice que la respuesta es audio, no JSON",
-              "audio/wav" in rutas["get"]["responses"]["200"]["content"]
-              and "application/json" not in rutas["get"]["responses"]["200"]["content"],
-              str(sorted(rutas["get"]["responses"]["200"]["content"])))
+              r.headers.get("x-bonsai-voice", "(none)"))
+        check("the schema says the response is audio, not JSON",
+              "audio/wav" in routes["get"]["responses"]["200"]["content"]
+              and "application/json" not in routes["get"]["responses"]["200"]["content"],
+              str(sorted(routes["get"]["responses"]["200"]["content"])))
 
         # ---------------------------------------------------------------
-        # 4 ter. La API está en /api/v1, y solo ahí
+        # 4 ter. The API lives at /api/v1, and only there
         # ---------------------------------------------------------------
         r = await c.get("/health")
-        check("/api/v1/health responde 200", r.status_code == 200, r.text[:120])
-        check("y dice qué versión es", r.json().get("api", {}).get("version") == "v1",
+        check("/api/v1/health returns 200", r.status_code == 200, r.text[:120])
+        check("and says which version it is", r.json().get("api", {}).get("version") == "v1",
               str(r.json().get("api")))
-        r = await c.get("http://test/health")     # sin prefijo, a propósito
-        check("/health sin prefijo -> 404", r.status_code == 404, str(r.status_code))
+        r = await c.get("http://test/health")     # unprefixed, on purpose
+        check("/health without prefix -> 404", r.status_code == 404, str(r.status_code))
         r = await c.post("http://test/look", json={
-            "image": base64.b64encode(FOTO).decode(), "deviceId": "ulleres-01",
+            "image": base64.b64encode(PHOTO).decode(), "deviceId": "ulleres-01",
         })
-        check("/look sin prefijo -> 404", r.status_code == 404, str(r.status_code))
-        rutas = main.app.openapi()["paths"]
-        check("el esquema solo lleva rutas versionadas",
-              all(p.startswith("/api/v1") for p in rutas
+        check("/look without prefix -> 404", r.status_code == 404, str(r.status_code))
+        routes = main.app.openapi()["paths"]
+        check("the schema only carries versioned routes",
+              all(p.startswith("/api/v1") for p in routes
                   if p not in ("/provar", "/probar")),
-              str(sorted(rutas)))
+              str(sorted(routes)))
 
         # ---------------------------------------------------------------
-        # 5. Errores
+        # 5. Errors
         # ---------------------------------------------------------------
-        r = await c.post("/ask", content=trama(FOTO, b"\x00" * 100))
-        check("audio de 3 ms -> 400", r.status_code == 400, r.text[:120])
+        r = await c.post("/ask", content=frame(PHOTO, b"\x00" * 100))
+        check("3 ms of audio -> 400", r.status_code == 400, r.text[:120])
 
         r = await c.post("/ask", content=struct.pack(">I", 99_999_999) + b"xx")
-        check("longitud imposible -> 400", r.status_code == 400, r.text[:120])
+        check("impossible length -> 400", r.status_code == 400, r.text[:120])
 
-        r = await c.post("/ask", content=struct.pack(">I", 5000) + FOTO)
-        check("cuerpo cortado -> 400", r.status_code == 400, r.text[:120])
+        r = await c.post("/ask", content=struct.pack(">I", 5000) + PHOTO)
+        check("truncated body -> 400", r.status_code == 400, r.text[:120])
 
-        # Un m4a de iPhone: "ftyp" va en el byte 4, no al principio. Con un
-        # startswith acababa envuelto en una cabecera WAV que no le tocaba.
-        enviadas.clear()
-        usa(responde)
+        # An iPhone m4a: "ftyp" sits at byte 4, not at the start. With a
+        # startswith it ended up wrapped in a WAV header it should not have.
+        sent.clear()
+        use(respond)
         M4A = (struct.pack(">I", 28) + b"ftypM4A " + b"\x00" * 2000)
-        r = await c.post("/ask", content=trama(FOTO, M4A))
-        check("un m4a llega 200", r.status_code == 200, r.text[:120])
-        cuerpo = enviadas[0].content
-        check("el m4a se manda tal cual, sin envolver",
-              b"RIFF" not in cuerpo[:400] and b'filename="veu.m4a"' in cuerpo)
-        check("de un m4a no se inventa la duración",
+        r = await c.post("/ask", content=frame(PHOTO, M4A))
+        check("an m4a gets 200", r.status_code == 200, r.text[:120])
+        body = sent[0].content
+        check("the m4a is sent as-is, unwrapped",
+              b"RIFF" not in body[:400] and b'filename="voice.m4a"' in body)
+        check("for an m4a the duration is not invented",
               "x-bonsai-audio-secs" not in r.headers
               and r.headers["x-bonsai-audio-bytes"] == str(len(M4A)))
 
-        # El flujo de las gafas: la foto sube, suena el "Diga'm" y solo
-        # entonces empieza el micro. Entre medias el cuerpo está en silencio y
-        # la petición no se puede caer por eso.
-        async def con_pausa():
-            yield struct.pack(">I", len(FOTO)) + FOTO
-            await asyncio.sleep(0.8)          # el clip del "Diga'm"
+        # The glasses' flow: the photo uploads, the "Diga'm" plays and only
+        # then does the mic start. In between the body is silent and the
+        # request must not fall over because of it.
+        async def with_pause():
+            yield struct.pack(">I", len(PHOTO)) + PHOTO
+            await asyncio.sleep(0.8)          # the "Diga'm" clip
             yield PCM
 
-        r = await c.post("/ask?deviceId=amb-pausa", content=con_pausa())
-        check("una pausa entre la foto y el micro no rompe nada",
+        r = await c.post("/ask?deviceId=amb-pausa", content=with_pause())
+        check("a pause between the photo and the mic breaks nothing",
               r.status_code == 200, r.text[:150])
-        check("y la reducción se hace mientras se espera",
+        check("and the resize happens while waiting",
               r.headers.get("x-bonsai-resize-wait-ms") == "0",
               r.headers.get("x-bonsai-resize-wait-ms"))
 
-        # Micro mudo del todo: hay que soltar la conexión, no colgarse.
-        antes_tope = main.ASK_SILENCIO
-        main.ASK_SILENCIO = 0.4
+        # Mic gone completely silent: drop the connection, do not hang.
+        previous_cap = main.ASK_SILENCE
+        main.ASK_SILENCE = 0.4
 
-        async def se_queda_mudo():
-            yield struct.pack(">I", len(FOTO)) + FOTO
-            await asyncio.sleep(5)            # el firmware se ha colgado
+        async def goes_silent():
+            yield struct.pack(">I", len(PHOTO)) + PHOTO
+            await asyncio.sleep(5)            # the firmware has hung
             yield PCM
 
         t = time.perf_counter()
-        r = await c.post("/ask?deviceId=mut", content=se_queda_mudo())
-        tardo = time.perf_counter() - t
-        main.ASK_SILENCIO = antes_tope
-        check("un micro que enmudece -> 408 y no se cuelga",
-              r.status_code == 408 and tardo < 3,
-              f"{r.status_code} en {tardo:.1f} s")
+        r = await c.post("/ask?deviceId=mut", content=goes_silent())
+        took = time.perf_counter() - t
+        main.ASK_SILENCE = previous_cap
+        check("a mic that goes silent -> 408 and no hang",
+              r.status_code == 408 and took < 3,
+              f"{r.status_code} in {took:.1f} s")
 
-        r = await c.post("/ask?audioFormat=flac", content=trama(FOTO, PCM))
-        check("formato inventado -> 400 antes de leer nada",
+        r = await c.post("/ask?audioFormat=flac", content=frame(PHOTO, PCM))
+        check("made-up format -> 400 before reading anything",
               r.status_code == 400, r.text[:120])
 
         r = await c.post("/ask?micRate=16000",
-                         content=trama(FOTO, b"\x11\x22" * 16000 * 31))
-        check("audio de 31 s -> 413", r.status_code == 413, r.text[:120])
+                         content=frame(PHOTO, b"\x11\x22" * 16000 * 31))
+        check("31 s of audio -> 413", r.status_code == 413, r.text[:120])
 
-        # Transcripción vacía: el micro no ha dado nada aprovechable.
-        enviadas.clear()
+        # Empty transcript: the mic gave nothing usable.
+        sent.clear()
 
-        def mudo(request):
+        def silent(request):
             if "transcriptions" in str(request.url):
                 return httpx.Response(200, json={"text": "   "})
             return httpx.Response(200, json={"choices": [{"message": {"content": "x"}}]})
 
-        usa(mudo)
-        r = await c.post("/ask", content=trama(FOTO, PCM))
-        check("no se entiende nada -> 422", r.status_code == 422, r.text[:140])
-        # 8 = la buena, la solapada, el m4a, la de la pausa, la muda, la de
-        # 3 ms, la de 31 s y esta. Las que fallan antes de tener la foto
-        # entera (trama mal formada, formato inventado) no dejan fila.
-        check("aun así se guarda la foto",
+        use(silent)
+        r = await c.post("/ask", content=frame(PHOTO, PCM))
+        check("nothing understood -> 422", r.status_code == 422, r.text[:140])
+        # 8 = the good one, the overlapped one, the m4a, the paused one, the
+        # silent one, the 3 ms one, the 31 s one and this one. The ones that
+        # fail before the photo is complete (bad frame, made-up format) leave
+        # no row.
+        check("the photo is stored anyway",
               len(memory.list_captures()) == 8, str(len(memory.list_captures())))
 
-        # 429 de la cuota de whisper
-        def sin_cuota(request):
+        # 429 from whisper's quota
+        def out_of_quota(request):
             return httpx.Response(429, text="Please try again in 12.7s")
 
-        usa(sin_cuota)
-        r = await c.post("/ask", content=trama(FOTO, PCM))
-        check("cuota agotada -> 429 con Retry-After",
+        use(out_of_quota)
+        r = await c.post("/ask", content=frame(PHOTO, PCM))
+        check("quota exhausted -> 429 with Retry-After",
               r.status_code == 429 and r.headers.get("retry-after") == "13",
               f"{r.status_code} {r.headers.get('retry-after')}")
 
-    usa(responde)
-    await socket_de_verdad()
+    use(respond)
+    await real_socket()
 
     print()
-    print(f"{len(fallos)} fallos" if fallos else "TODO CORRECTO, 0 tokens gastados")
-    return 1 if fallos else 0
+    print(f"{len(failures)} failures" if failures else "ALL GOOD, 0 tokens spent")
+    return 1 if failures else 0
 
 
-sys.exit(asyncio.run(principal()))
+sys.exit(asyncio.run(main_test()))

@@ -88,9 +88,9 @@ El código está en el paquete `app/` y se arranca con **`app.main:app`**, no
 `main:app`. Dentro de `app/` los imports son relativos (`from . import vision`).
 
 ```
-app/       main, vision (Groq), stt, tts (Piper), imagen, memory, panel, clips, static/
+app/       main, vision (Groq), stt, tts (Piper), images, memory, panel, audios, static/
 tests/     test_api.py (automático, 0 tokens) · smoke.py (manual, gasta cuota)
-scripts/   bench_latency.py, generar_clips.py, run-local.sh, run-local.ps1
+scripts/   bench_latency.py, generate_audios.py, run-local.sh, run-local.ps1
 ```
 
 `tests/` y `scripts/` se ejecutan desde la raíz del repositorio
@@ -100,6 +100,45 @@ solos, y hay un `conftest.py` en la raíz para que `pytest` haga lo mismo.
 Ojo con `tts.py`: hace `from . import vision` **dentro de una función**, para
 bajar las voces reutilizando el cliente HTTP compartido. No basta con mirar las
 cabeceras de los ficheros al buscar dependencias.
+
+### El código va en inglés; el README y `/provar`, no
+
+Identificadores, comentarios y docstrings, todo en inglés, y los comentarios de
+**1 o 2 líneas**: dicen por qué, no qué. El razonamiento largo vive aquí y en
+`docs/BENCHMARKS.md`, que es su sitio; repetirlo en el código solo daba dos
+copias que se separan.
+
+Se quedan en catalán/castellano dos cosas, a propósito: el **README**, que lo lee
+una persona, y las **cadenas de `/provar`**, que también. El panel `/admin`
+(`panel.py`) sí está traducido entero, interfaz incluida.
+
+Lo que **no** se traduce nunca, aunque suene raro en un fichero en inglés:
+
+- Cabeceras `X-Bonsai-*` y `X-API-Token`.
+- Campos JSON (`deviceId`, `audioFormat`, `sampleRate`, `maxSide`, `micRate`…).
+- Rutas, incluidas `/provar` y su alias `/probar`.
+- Nombres de variables de entorno. **Cuidado con esta trampa**: el nombre Python
+  sí se traduce y el de entorno no, así que `ASK_SILENCE` lee
+  `ASK_SILENCE_TIMEOUT_SECONDS`, `ASK_MAX_SECONDS` lee `ASK_MAX_AUDIO_SECONDS` y
+  `ASK_MAX_IMAGE` lee `ASK_MAX_IMAGE_BYTES`.
+- El esquema de SQLite: renombrar una tabla o una columna es una migración sobre
+  datos vivos de la VPS.
+- Los ids de voz de Piper (`ca_ES-upc_ona-medium`) y los códigos `ca`/`es`/`en`.
+
+### `clips` ahora se llama `audios`
+
+Para que coincida con el firmware, que ya les llama `Audio::DefaultAudios`.
+Cambió el módulo (`audios.py`), las funciones, **la ruta** (`/clips` → `/audios`,
+`/clips/{id}` → `/audios/{audio_id}`), la clave de la respuesta (`clips` →
+`audios`) y la cabecera (`X-Bonsai-Clip` → `X-Bonsai-Audio`). Las dos últimas son
+contrato con el dispositivo: hay que actualizar los dos lados a la vez.
+
+**Los ids no se tocan** (`no_wifi`, `start_talking`, `first_boot`,
+`missing_config`): el firmware los pide por nombre.
+
+Y `scripts/generate_audios.py` ya no tiene su propia tabla de frases; lee
+`app/audios.py`, que es la misma que sirve la API. Antes la frase del «Digue'm»
+estaba escrita en dos sitios.
 
 **La voz de Piper NO está en el repositorio**: se baja sola la primera vez (63 MB).
 Si estás corriendo `tests/test_api.py` en una máquina limpia, ojo con esto: el test cambia
@@ -121,7 +160,7 @@ Cosas que NO cambian la latencia, comprobadas para no volver a probarlas:
 
 ## Pendiente
 
-- **`/admin` no se monta.** `panel.construeix()` no lo llama nadie desde `main.py`, y
+- **`/admin` no se monta.** `panel.build()` no lo llama nadie desde `main.py`, y
   la propia función tampoco hace el `ui.run_with(app)` que NiceGUI necesita para
   colgarse de FastAPI. O sea que la ruta da 404 siempre, tenga o no `ADMIN_PASSWORD`.
   Viene de antes de la limpieza; el resto de esta nota describe cómo debería quedar.
@@ -143,7 +182,7 @@ elegir voz por petición no lo usa nadie (el firmware manda un idioma) y obligab
 a validar en el endpoint algo que ya está decidido en el servidor.
 
 Cambiar la voz de un idioma es escribir otro nombre del repositorio de Piper en
-ese diccionario. **La ruta de descarga se deduce del nombre** (`_ruta_hf`:
+ese diccionario. **La ruta de descarga se deduce del nombre** (`_hf_path`:
 `ca_ES-upc_ona-medium` → `ca/ca_ES/upc_ona/medium`), así que no hay una segunda
 tabla que mantener al lado, que es lo que había antes.
 
@@ -188,7 +227,7 @@ tres endpoints que hablan, que devuelven audio. `_RESPUESTA_AUDIO` lo arregla y 
 
 ### El WAV va entero, no troceado, y por un motivo
 
-`tts.cabecera_wav` sin `datos_bytes` pone 0xFFFFFFFF en las longitudes, que es lo
+`tts.wav_header` sin `data_bytes` pone 0xFFFFFFFF en las longitudes, que es lo
 único que se puede hacer si se responde sobre la marcha. Al ESP32 le da igual, pero **un
 reproductor no puede calcular la duración y enseña 0:00 sin sonar**: se vio probando
 `/speak` desde `/docs`, con un cuerpo de 18 KB de audio de verdad que ningún `<audio>`
@@ -232,9 +271,9 @@ Cuatro cosas que conviene no volver a averiguar:
 2. **La clave es la misma `GROQ_API_KEY`** para transcribir y para ver: sin ella,
    `/ask` devuelve 500.
 3. **Al PCM del micro hay que ponerle cabecera WAV con las longitudes de
-   verdad.** No sirve `tts.cabecera_wav`, que pone 0xFFFFFFFF porque
+   verdad.** No sirve `tts.wav_header`, que pone 0xFFFFFFFF porque
    responde sobre la marcha: Whisper rechaza un WAV con longitudes imposibles.
-   Por eso hay una `stt.cabecera_wav` aparte.
+   Por eso hay una `stt.wav_header` aparte.
 4. **El m4a no empieza por su firma**: los 4 primeros bytes son el tamaño de la
    caja y `ftyp` viene detrás, así que un `startswith` no lo detecta y el
    fichero acababa envuelto en una cabecera WAV que no le tocaba. Es lo que
@@ -243,7 +282,7 @@ Cuatro cosas que conviene no volver a averiguar:
    salen a menudo en PCM en crudo y confundirlos sería peor.
 
 Antes de la foto y la pregunta se le dan por dichos dos turnos —
-`user: Hey Bonsai!` / `assistant: Diga’m!` (`vision.PREAMBULO_VEU`)— para que
+`user: Hey Bonsai!` / `assistant: Diga’m!` (`vision.VOICE_PREAMBLE`)— para que
 conteste como quien sigue una conversación. `/look` no los lleva.
 
 **No son inventados: es lo que pasa de verdad.** El firmware detecta "Hey
@@ -255,7 +294,7 @@ modelo una conversación que no ha ocurrido.
 El clip **no está en el repositorio a propósito**: el dispositivo se lo baja al
 primer arranque con `/speak?text=...&audioFormat=pcm16&sampleRate=16000` y lo
 guarda en la SD (16 KB, 0,52 s). Así siempre es la voz que hay puesta en el
-servidor y no hay dos copias que se separen. `scripts/generar_clips.py` lo deja en
+servidor y no hay dos copias que se separen. `scripts/generate_audios.py` lo deja en
 `assets/` si lo quieres a mano desde el ordenador, pero esa carpeta está en el
 .gitignore. Ojo: Piper mete ruido aleatorio en cada síntesis, así que dos
 generaciones no dan ficheros idénticos al byte.

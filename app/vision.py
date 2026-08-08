@@ -1,13 +1,13 @@
-"""Visión: describe una imagen con el modelo de Groq.
+"""Vision: describe an image with Groq's model.
 
-Además del cliente de Groq, aquí vive lo común que usan otros módulos: el
-cliente HTTP compartido (`stt` y `tts` también lo reutilizan), la
-excepción de cuota agotada y la detección del formato de la imagen.
+Besides the Groq client, this holds what other modules share: the pooled HTTP
+client (`stt` and `tts` reuse it too), the out-of-quota exception and image
+format sniffing.
 
-Hubo un segundo proveedor (Gemini) y un módulo aparte por cada uno para poder
-cambiarlos. Se quitó: Groq es más rápido y sobre todo más regular (552 ms de
-visión frente a 844 ms, con la misma imagen), y mantener la capa de reparto
-para una sola rama solo daba pie a que se quedara desfasada.
+There was a second provider (Gemini) and a module per provider so they could be
+swapped. It went away: Groq is faster and far steadier (552 ms of vision against
+844 ms on the same image), and keeping a dispatch layer over a single branch
+only invites one of the two paths to rot.
 """
 
 from __future__ import annotations
@@ -20,53 +20,48 @@ import httpx
 
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
-# Sirve para abrir la conexión TLS sin gastar tokens (ver warmup).
+# Opens the TLS connection without spending tokens (see warmup).
 WARMUP_URL = "https://api.groq.com/openai/v1/models"
 
-# Comprueba el nombre vigente en https://console.groq.com/docs/models
-# (Groq renombra y retira modelos con frecuencia).
+# Check the current name at https://console.groq.com/docs/models — Groq renames
+# and retires models often.
 MODEL = os.environ.get("GROQ_VISION_MODEL", "qwen/qwen3.6-27b")
 
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 
-# Groq no siempre manda la cabecera retry-after, pero sí dice el rato en el
-# texto del error: "Please try again in 16.56s" (o "in 12m39.024s").
-_ESPERA_RE = re.compile(r"try again in\s+(?:(\d+)m)?([\d.]+)s", re.IGNORECASE)
+# Groq does not always send retry-after, but it does say the wait in the error
+# text: "Please try again in 16.56s" (or "in 12m39.024s").
+_WAIT_RE = re.compile(r"try again in\s+(?:(\d+)m)?([\d.]+)s", re.IGNORECASE)
 
 
 class VisionRateLimit(Exception):
-    """Se ha agotado la cuota de Groq (429).
+    """Groq's quota is spent (429).
 
-    Se distingue del resto de errores para poder devolver un 429 al cliente,
-    con el rato que hay que esperar, en vez de un 502 genérico que parece un
-    fallo del servidor cuando en realidad solo hay que esperar.
+    Kept apart from other errors so the client gets a 429 with how long to wait
+    instead of a generic 502 that looks like a broken server when all it has to
+    do is wait.
     """
 
-    def __init__(self, mensaje: str, retry_after: float | None = None) -> None:
-        super().__init__(mensaje)
+    def __init__(self, message: str, retry_after: float | None = None) -> None:
+        super().__init__(message)
         self.retry_after = retry_after
 
 
-# Se mantiene el nombre antiguo por si algo de fuera lo importa.
-GroqRateLimit = VisionRateLimit
-
-
 def describe_error(e: BaseException) -> str:
-    """Texto para el cliente que nunca sale vacío.
+    """Text for the client that is never empty.
 
-    Los timeouts de httpx tienen `str(e)` vacío, así que sin esto el error que
-    llegaba era «Fallo al describir la imagen: » y no había forma de saber qué
-    había pasado.
+    httpx timeouts have an empty `str(e)`, so without this the error reaching
+    the client was «Failed to describe the image: » and said nothing.
     """
     return str(e) or type(e).__name__
 
 
 # --------------------------------------------------------------------------
-# Formato de la imagen
+# Image format
 # --------------------------------------------------------------------------
-# El data URL tiene que decir el formato de verdad: mandar un PNG diciendo que
-# es JPEG funciona de milagro, no por diseño.
-_FIRMAS = (
+# The data URL has to state the real format: sending a PNG labelled JPEG works
+# by luck, not by design.
+_SIGNATURES = (
     (b"\x89PNG\r\n\x1a\n", "image/png"),
     (b"\xff\xd8\xff", "image/jpeg"),
     (b"GIF87a", "image/gif"),
@@ -75,31 +70,30 @@ _FIRMAS = (
 
 
 def sniff_mime(image_base64: str) -> str:
-    """Detecta el formato mirando la cabecera, sin descodificar todo.
+    """Detects the format from the header, without decoding everything.
 
-    Descodificar 4 MB de base64 solo para leer 8 bytes serían decenas de ms
-    por petición, así que basta con los primeros 16 caracteres (12 bytes).
+    Decoding 4 MB of base64 just to read 8 bytes would be tens of ms per
+    request, so the first 16 characters (12 bytes) are enough.
     """
     try:
-        cabecera = base64.b64decode(image_base64[:16], validate=False)
+        header = base64.b64decode(image_base64[:16], validate=False)
     except Exception:
         return "image/jpeg"
 
-    for firma, mime in _FIRMAS:
-        if cabecera.startswith(firma):
+    for signature, mime in _SIGNATURES:
+        if header.startswith(signature):
             return mime
-    if cabecera[:4] == b"RIFF" and cabecera[8:12] == b"WEBP":
+    if header[:4] == b"RIFF" and header[8:12] == b"WEBP":
         return "image/webp"
     return "image/jpeg"
 
 
 # --------------------------------------------------------------------------
-# Cliente HTTP compartido
+# Shared HTTP client
 # --------------------------------------------------------------------------
-# Un solo cliente para todo el proceso, en vez de uno nuevo por petición:
-# abrir la conexión TLS cuesta ~220 ms medidos, y así se paga una vez y no en
-# cada foto. `retries` cubre el caso de que el servidor haya cerrado la
-# conexión que teníamos guardada mientras no se usaba.
+# One client for the whole process instead of one per request: the TLS
+# handshake costs ~220 ms measured, so it is paid once and not on every photo.
+# `retries` covers the server having closed our idle pooled connection.
 _client: httpx.AsyncClient | None = None
 
 
@@ -114,7 +108,7 @@ def get_client() -> httpx.AsyncClient:
 
 
 async def aclose() -> None:
-    """Cierra la conexión al apagar el servidor."""
+    """Closes the connection when the server shuts down."""
     global _client
     if _client is not None and not _client.is_closed:
         await _client.aclose()
@@ -132,31 +126,31 @@ def auth_headers(key: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
 
 
-def _segundos_de_espera(resp: httpx.Response) -> float | None:
-    cabecera = resp.headers.get("retry-after")
-    if cabecera:
+def _seconds_to_wait(resp: httpx.Response) -> float | None:
+    header = resp.headers.get("retry-after")
+    if header:
         try:
-            return float(cabecera)
+            return float(header)
         except ValueError:
             pass
-    m = _ESPERA_RE.search(resp.text)
+    m = _WAIT_RE.search(resp.text)
     if m:
-        minutos = float(m.group(1) or 0)
-        return minutos * 60 + float(m.group(2))
+        minutes = float(m.group(1) or 0)
+        return minutes * 60 + float(m.group(2))
     return None
 
 
-# Turnos de conversación que van delante de la pregunta y la imagen.
+# Conversation turns that go before the question and the image.
 #
-# No son inventados: es lo que ha pasado de verdad justo antes. La persona ha
-# dicho la palabra de activación y las gafas le han contestado con un clip ya
-# grabado mientras subía la foto. Dándoselos por dichos, el modelo responde
-# como quien continúa una conversación y no como quien recibe una orden.
+# They are not made up: it is what actually happened a moment earlier. The
+# person said the wake word and the glasses answered with a recorded clip while
+# the photo uploaded. Taking them as said, the model answers like someone
+# continuing a conversation instead of someone taking an order.
 #
-# Van en variables de entorno porque tienen que coincidir con lo que hace el
-# firmware: si cambias el clip que suena en las gafas, cambia también esto o
-# le estarás contando al modelo una conversación que no ha ocurrido.
-PREAMBULO_VEU: tuple[tuple[str, str], ...] = (
+# They live in env vars because they have to match what the firmware does: if
+# you change the clip the glasses play, change this too or you are telling the
+# model about a conversation that never happened.
+VOICE_PREAMBLE: tuple[tuple[str, str], ...] = (
     ("user", os.environ.get("ASK_WAKE_PHRASE", "Hey Bonsai!")),
     ("assistant", os.environ.get("ASK_WAKE_REPLY", "Diga’m!")),
 )
@@ -170,30 +164,30 @@ async def describe_image(
     timeout: float = 30.0,
     preamble: tuple[tuple[str, str], ...] | None = None,
 ) -> str:
-    """Describe la imagen con el modelo de visión de Groq.
+    """Describes the image with Groq's vision model.
 
-    `preamble` son turnos ("user"/"assistant", texto) que se insertan entre el
-    system prompt y el mensaje con la imagen. Lo usa /ask para dar por dicha la
-    palabra de activación (ver PREAMBULO_VEU).
+    `preamble` are ("user"/"assistant", text) turns inserted between the system
+    prompt and the message carrying the image. /ask uses it to take the wake
+    word as said (see VOICE_PREAMBLE).
     """
-    # Turnos previos, si los hay: van entre el system y el mensaje con la
-    # imagen. Aquí el formato es el de OpenAI, así que valen tal cual.
-    previos = [{"role": rol, "content": texto} for rol, texto in (preamble or ())]
+    # Previous turns, if any, go between the system message and the image. The
+    # format here is OpenAI's, so they pass through as they are.
+    previous = [{"role": role, "content": text} for role, text in (preamble or ())]
 
     payload = {
         "model": MODEL,
         "temperature": 0.4,
-        # Techo de seguridad: la respuesta se lee en voz alta, así que una
-        # respuesta larga son segundos de espera. El límite real lo pone el
-        # prompt (1-2 frases); esto solo evita que se desmadre.
+        # Safety ceiling: the answer is read out loud, so a long one is seconds
+        # of waiting. The real limit is the prompt (1-2 sentences); this only
+        # stops it running away.
         "max_completion_tokens": 150,
-        # Desactiva el razonamiento paso a paso: para describir una imagen no
-        # aporta nada y solo añade latencia y tokens.
+        # No step-by-step reasoning: it adds nothing to describing an image and
+        # only costs latency and tokens.
         "reasoning_effort": "none",
         "reasoning_format": "hidden",
         "messages": [
             {"role": "system", "content": system_prompt},
-            *previos,
+            *previous,
             {
                 "role": "user",
                 "content": [
@@ -201,8 +195,8 @@ async def describe_image(
                     {
                         "type": "image_url",
                         "image_url": {
-                            # El formato se detecta de verdad: antes iba
-                            # "image/jpeg" fijo aunque la imagen fuese PNG.
+                            # Sniffed for real: this used to be a hardcoded
+                            # "image/jpeg" even when the image was a PNG.
                             "url": f"data:{sniff_mime(image_base64)};base64,{image_base64}"
                         },
                     },
@@ -220,37 +214,32 @@ async def describe_image(
 
     if resp.status_code == 429:
         raise VisionRateLimit(
-            f"Cuota de Groq agotada: {resp.text[:300]}",
-            _segundos_de_espera(resp),
+            f"Groq quota spent: {resp.text[:300]}",
+            _seconds_to_wait(resp),
         )
 
     if resp.status_code >= 400:
-        raise RuntimeError(f"Error de Groq ({resp.status_code}): {resp.text[:300]}")
+        raise RuntimeError(f"Groq error ({resp.status_code}): {resp.text[:300]}")
 
     data = resp.json()
     raw = (data.get("choices") or [{}])[0].get("message", {}).get("content", "")
-    # Red de seguridad por si el modelo ignora reasoning_format.
+    # Safety net in case the model ignores reasoning_format.
     return _THINK_RE.sub("", raw).strip()
 
 
 async def warmup() -> bool:
-    """Abre la conexión TLS antes de la primera foto.
+    """Opens the TLS connection before the first photo.
 
-    El saludo TLS son ~220 ms que, si no se hace esto, los paga la primera
-    persona que use las gafas. Pide un listado de modelos: no gasta ni un
-    token de la cuota.
+    The TLS handshake is ~220 ms that otherwise the first person to use the
+    glasses pays. Asks for a model listing: not a single token of quota.
     """
-    clave = api_key()
-    if not clave:
+    key = api_key()
+    if not key:
         return False
     try:
-        await get_client().get(
-            WARMUP_URL,
-            headers=auth_headers(clave),
-            timeout=10.0,
-        )
+        await get_client().get(WARMUP_URL, headers=auth_headers(key), timeout=10.0)
         return True
     except Exception:
-        # Es un calentamiento: si falla, la primera petición real ya abrirá la
-        # conexión. No es motivo para no arrancar.
+        # It is a warmup: if it fails, the first real request opens the
+        # connection anyway. Not a reason to refuse to start.
         return False

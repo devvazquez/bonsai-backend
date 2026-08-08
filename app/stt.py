@@ -1,20 +1,16 @@
-"""Transcripción de voz con Whisper turbo en Groq.
+"""Speech transcription with Whisper turbo on Groq.
 
-Es la primera mitad de `/ask`: las gafas mandan lo que ha dicho quien las
-lleva y aquí se convierte en texto para pasárselo al modelo de visión como
-pregunta.
+First half of `/ask`: the glasses send what the wearer said and here it becomes
+the text question handed to the vision model.
 
-Se usa `whisper-large-v3-turbo` porque en la capa gratuita de Groq **no gasta
-la cuota de texto**: los límites de audio van por segundos transcritos y por
-peticiones, no por los 200.000 tokens/día que se comen las fotos. Es decir,
-probar `/ask` no te deja sin `/look`.
+`whisper-large-v3-turbo` is used because on Groq's free tier it does **not**
+spend the text quota — audio limits are per transcribed second, not the
+200,000 tokens/day the photos eat. Testing `/ask` never breaks `/look`.
 
-La API es la de OpenAI (`/openai/v1/audio/transcriptions`), así que espera un
-fichero de audio de verdad, no muestras sueltas. El micro de la XIAO ESP32-S3
-Sense es un PDM (MSM261D3526H1CPM) que se lee con el periférico I2S en modo
-PDM, y lo que sale de ahí es PCM16 en crudo. Por eso aquí se le pone una
-cabecera WAV antes de mandarlo: son 44 bytes y evita tener que codificar nada
-en el microcontrolador.
+The API is OpenAI's (`/openai/v1/audio/transcriptions`), so it expects a real
+audio file, not loose samples. The XIAO ESP32-S3 Sense mic is a PDM one read
+through I2S, which yields raw PCM16; hence the 44-byte WAV header added here
+instead of encoding anything on the microcontroller.
 """
 
 from __future__ import annotations
@@ -29,15 +25,15 @@ from .vision import VisionRateLimit, get_client
 
 GROQ_STT_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 
-# Comprueba el nombre vigente en https://console.groq.com/docs/models
+# Check the current name at https://console.groq.com/docs/models
 MODEL = os.environ.get("GROQ_STT_MODEL", "whisper-large-v3-turbo")
 
-# Mismo formato de error que en groq_vision: "Please try again in 16.56s".
-_ESPERA_RE = re.compile(r"try again in\s+(?:(\d+)m)?([\d.]+)s", re.IGNORECASE)
+# Same error shape as groq_vision: "Please try again in 16.56s".
+_WAIT_RE = re.compile(r"try again in\s+(?:(\d+)m)?([\d.]+)s", re.IGNORECASE)
 
-# Formatos que Groq acepta tal cual. Si el audio empieza por una de estas
-# firmas se manda sin tocar; si no, se asume PCM en crudo del micro.
-_FIRMAS = (
+# Formats Groq takes as-is. Audio starting with one of these signatures is
+# sent untouched; anything else is assumed to be raw PCM from the mic.
+_SIGNATURES = (
     (b"RIFF", "wav"),
     (b"OggS", "ogg"),
     (b"fLaC", "flac"),
@@ -45,71 +41,67 @@ _FIRMAS = (
     (b"ID3", "mp3"),
 )
 
-# El m4a (y el mp4 en general) no empieza por su firma: los primeros 4 bytes
-# son el tamaño de la caja y "ftyp" viene detrás. Es lo que graba un iPhone,
-# así que sin esto un m4a acababa envuelto en una cabecera WAV que no le
-# correspondía y Whisper recibía basura.
+# m4a (and mp4) does not start with its signature: the first 4 bytes are the
+# box size and "ftyp" follows. Without this an iPhone recording ended up
+# wrapped in a WAV header and Whisper got garbage.
 _FTYP = slice(4, 8)
 
-# Un MP3 sin etiqueta ID3 empieza por el sync del primer frame (0xFF Ex). No
-# se detecta a propósito: en PCM en crudo esos dos bytes salen a menudo, y
-# confundir muestras con un MP3 es peor que pedir que traigan cabecera.
+# An MP3 without an ID3 tag starts with the frame sync (0xFF Ex). Deliberately
+# not detected: those two bytes show up often in raw PCM and a false positive
+# is worse than requiring a header.
 
 
 def api_key() -> str:
     return os.environ.get("GROQ_API_KEY", "")
 
 
-def cabecera_wav(sample_rate: int, muestras_bytes: int, bits: int = 16) -> bytes:
-    """Cabecera WAV con las longitudes de verdad.
+def wav_header(sample_rate: int, sample_bytes: int, bits: int = 16) -> bytes:
+    """WAV header with the real lengths.
 
-    Aquí sí se sabe cuánto audio hay (ya ha llegado entero), al revés que en
-    `tts.cabecera_wav`, que responde sobre la marcha y tiene que poner
-    0xFFFFFFFF. Whisper rechaza un WAV con longitudes imposibles, así que esta
-    no puede reutilizar aquella.
+    Here the audio has already arrived whole, unlike `tts.wav_header`, which
+    streams and must write 0xFFFFFFFF. Whisper rejects impossible lengths, so
+    this one cannot reuse that one.
     """
-    bloque = bits // 8
+    block = bits // 8
     return (
-        b"RIFF" + struct.pack("<I", 36 + muestras_bytes) + b"WAVEfmt "
+        b"RIFF" + struct.pack("<I", 36 + sample_bytes) + b"WAVEfmt "
         + struct.pack("<IHHIIHH", 16, 1, 1, sample_rate,
-                      sample_rate * bloque, bloque, bits)
-        + b"data" + struct.pack("<I", muestras_bytes)
+                      sample_rate * block, block, bits)
+        + b"data" + struct.pack("<I", sample_bytes)
     )
 
 
-def envolver(audio: bytes, sample_rate: int) -> tuple[bytes, str, float | None]:
-    """Deja el audio listo para Groq: (cuerpo, extensión, segundos).
+def wrap(audio: bytes, sample_rate: int) -> tuple[bytes, str, float | None]:
+    """Gets the audio ready for Groq: (body, extension, seconds).
 
-    Si ya viene en un formato con cabecera (WAV, OGG, m4a...) se respeta tal
-    cual; si es PCM en crudo, que es lo que da el I2S del ESP32, se le pone la
-    cabecera WAV.
+    Anything already carrying a header (WAV, OGG, m4a...) is passed through;
+    raw PCM, which is what the ESP32's I2S gives, gets a WAV header.
 
-    Los segundos solo se saben con el PCM, donde son una división: en un
-    formato comprimido harían falta el bitrate y descodificarlo, y no vale la
-    pena solo para enseñar una cifra. De ahí el None.
+    Seconds are only known for PCM, where it is a division: a compressed format
+    would need the bitrate and a decode just to show a number. Hence the None.
     """
-    for firma, ext in _FIRMAS:
-        if audio.startswith(firma):
+    for signature, ext in _SIGNATURES:
+        if audio.startswith(signature):
             return audio, ext, None
     if audio[_FTYP] == b"ftyp":
         return audio, "m4a", None
-    return (cabecera_wav(sample_rate, len(audio)) + audio, "wav",
-            duracion_pcm16(len(audio), sample_rate))
+    return (wav_header(sample_rate, len(audio)) + audio, "wav",
+            pcm16_duration(len(audio), sample_rate))
 
 
-def duracion_pcm16(n_bytes: int, sample_rate: int) -> float:
-    """Segundos que dura ese PCM16 mono. Para avisar antes de gastar cuota."""
+def pcm16_duration(n_bytes: int, sample_rate: int) -> float:
+    """Seconds that mono PCM16 lasts. To warn before spending quota."""
     return n_bytes / (sample_rate * 2) if sample_rate else 0.0
 
 
-def _segundos_de_espera(resp: httpx.Response) -> float | None:
-    cabecera = resp.headers.get("retry-after")
-    if cabecera:
+def _seconds_to_wait(resp: httpx.Response) -> float | None:
+    header = resp.headers.get("retry-after")
+    if header:
         try:
-            return float(cabecera)
+            return float(header)
         except ValueError:
             pass
-    m = _ESPERA_RE.search(resp.text)
+    m = _WAIT_RE.search(resp.text)
     if m:
         return float(m.group(1) or 0) * 60 + float(m.group(2))
     return None
@@ -122,35 +114,35 @@ async def transcribe(
     api_key_: str | None = None,
     timeout: float = 30.0,
 ) -> str:
-    """Devuelve lo que se ha dicho, en texto. Cadena vacía si no se oye nada."""
-    clave = api_key_ or api_key()
-    if not clave:
-        raise RuntimeError("GROQ_API_KEY no está configurada: /ask la necesita "
-                           "para transcribir.")
+    """Returns what was said, as text. Empty string if nothing is heard."""
+    key = api_key_ or api_key()
+    if not key:
+        raise RuntimeError("GROQ_API_KEY is not configured: /ask needs it "
+                           "to transcribe.")
 
-    cuerpo, ext, _ = envolver(audio, sample_rate)
+    body, ext, _ = wrap(audio, sample_rate)
 
-    datos = {"model": MODEL, "response_format": "json", "temperature": "0"}
-    # Decírselo ahorra que Whisper adivine el idioma, que es de lo poco que
-    # añade latencia aquí. Si no se sabe, mejor no mentirle.
+    data = {"model": MODEL, "response_format": "json", "temperature": "0"}
+    # Telling it the language saves Whisper from guessing, which is about the
+    # only thing that adds latency here. If unknown, better not to lie.
     if lang:
-        datos["language"] = lang
+        data["language"] = lang
 
     resp = await get_client().post(
         GROQ_STT_URL,
-        headers={"Authorization": f"Bearer {clave}"},
-        files={"file": (f"veu.{ext}", cuerpo, f"audio/{ext}")},
-        data=datos,
+        headers={"Authorization": f"Bearer {key}"},
+        files={"file": (f"voice.{ext}", body, f"audio/{ext}")},
+        data=data,
         timeout=timeout,
     )
 
     if resp.status_code == 429:
         raise VisionRateLimit(
-            f"Cuota de transcripción de Groq agotada: {resp.text[:300]}",
-            _segundos_de_espera(resp),
+            f"Groq transcription quota exhausted: {resp.text[:300]}",
+            _seconds_to_wait(resp),
         )
     if resp.status_code >= 400:
-        raise RuntimeError(f"Error de Groq al transcribir ({resp.status_code}): "
+        raise RuntimeError(f"Groq error while transcribing ({resp.status_code}): "
                            f"{resp.text[:300]}")
 
     return (resp.json().get("text") or "").strip()
