@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # Arranca el backend de Bonsai en local, sin Docker (Linux / macOS).
 #
-#   ./run-local.sh
+#   ./scripts/run-local.sh
 #
 # Crea el entorno virtual la primera vez, instala las dependencias, carga el
 # .env y levanta el servidor en http://127.0.0.1:8080 con recarga automática.
 
 set -euo pipefail
-cd "$(dirname "$0")"
+# A la raíz del repositorio: el .env, el .venv y el paquete `app` viven ahí,
+# no al lado de este script.
+cd "$(dirname "$0")/.."
 
 if [ ! -f .env ]; then
   cp .env.example .env
@@ -35,16 +37,10 @@ set -a
 . ./.env
 set +a
 
-# Solo se avisa de la clave del proveedor que se vaya a usar de verdad.
-PROVEEDOR="${VISION_PROVIDER:-groq}"
-if [ "$PROVEEDOR" = "groq" ]; then
-  CLAVE="${GROQ_API_KEY:-}"; ESPERADO="la-teva-api-key-de-groq"; NOMBRE="GROQ_API_KEY"
-else
-  CLAVE="${GEMINI_API_KEY:-}"; ESPERADO="tu-api-key-de-gemini"; NOMBRE="GEMINI_API_KEY"
-fi
-if [ -z "$CLAVE" ] || [ "$CLAVE" = "$ESPERADO" ]; then
+CLAVE="${GROQ_API_KEY:-}"
+if [ -z "$CLAVE" ] || [ "$CLAVE" = "la-teva-api-key-de-groq" ]; then
   echo
-  echo "Falta $NOMBRE en el .env: /api/v1/look dará error 500."
+  echo "Falta GROQ_API_KEY en el .env: /api/v1/look dará error 500."
   echo "El resto (/api/v1/speak, /memory, /provar) sí funcionará:"
   echo "la voz es Piper y va en local, sin ninguna clave."
 fi
@@ -67,8 +63,8 @@ if [ "$HOST" = "0.0.0.0" ]; then
 else
   echo "  Desde el móvil: BONSAI_HOST=0.0.0.0 ./run-local.sh"
 fi
-echo "  Para probarlo: python test_bonsai.py  (en otra terminal)"
+echo "  Para probarlo: python tests/smoke.py  (en otra terminal)"
 echo "  Ctrl+C para parar."
 echo
 
-exec "$PY" -m uvicorn main:app --host "$HOST" --port 8080 --reload
+exec "$PY" -m uvicorn app.main:app --host "$HOST" --port 8080 --reload

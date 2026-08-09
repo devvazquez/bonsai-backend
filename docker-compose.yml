@@ -10,22 +10,16 @@ services:
       # puedes comentar esta línea: Caddy se encarga de exponerlo.
       - "127.0.0.1:8080:8080"
     environment:
-      # El proveedor por defecto es groq, así que su key es la obligatoria.
-      # Si pones VISION_PROVIDER=gemini, cambia el ":?" de sitio.
-      - VISION_PROVIDER=${VISION_PROVIDER:-groq}
+      # La única clave obligatoria: la visión y la transcripción van por Groq.
       - GROQ_API_KEY=${GROQ_API_KEY:?Define GROQ_API_KEY en el fichero .env}
-      # Opcional: solo hace falta si pides "provider":"gemini" en /look.
-      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - BONSAI_API_TOKEN=${BONSAI_API_TOKEN:-}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-*}
-      - TTS_PROVIDER=${TTS_PROVIDER:-piper}
       # Panel /admin (acceso SQL completo). Sin esta variable la ruta no
       # existe, que es justo lo que se quiere si no se usa.
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
       # En el volumen para que los 63 MB del modelo se bajen una sola vez y
       # sobrevivan a las actualizaciones del contenedor.
       - PIPER_VOICES_DIR=/data/voices
-      # - GEMINI_VISION_MODEL=gemini-3.1-flash-lite
       # - GROQ_VISION_MODEL=qwen/qwen3.6-27b
     volumes:
       # Aquí vive la base de datos de los recuerdos, para que sobrevivan a

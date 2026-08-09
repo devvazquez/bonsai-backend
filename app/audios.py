@@ -10,8 +10,8 @@ by name): texts and languages can change freely, renaming an id cannot.
 
 from __future__ import annotations
 
-# The clips. This is what you edit to change what the glasses say.
-CLIPS: dict[str, dict[str, str]] = {
+# The audios. This is what you edit to change what the glasses say.
+AUDIOS: dict[str, dict[str, str]] = {
     "no_wifi": {
         "ca": "M'he quedat sense connexió Wifi, si us plau, "
               "connecteu-me a una xarxa Wifi.",
@@ -49,23 +49,23 @@ CLIPS: dict[str, dict[str, str]] = {
 
 
 def ids() -> list[str]:
-    return list(CLIPS)
+    return list(AUDIOS)
 
 
-def idiomas_de(clip_id: str) -> list[str]:
-    return sorted(CLIPS.get(clip_id, {}))
+def languages_of(audio_id: str) -> list[str]:
+    return sorted(AUDIOS.get(audio_id, {}))
 
 
-def texto(clip_id: str, lang: str) -> str | None:
-    """The clip in that language, or None. No fallback: a phrase in the wrong
+def text(audio_id: str, lang: str) -> str | None:
+    """The phrase in that language, or None. No fallback: a phrase in the wrong
     language is worse than a visible gap."""
-    return CLIPS.get(clip_id, {}).get((lang or "").lower())
+    return AUDIOS.get(audio_id, {}).get((lang or "").lower())
 
 
-def textos_de(lang: str) -> dict[str, str]:
+def texts_of(lang: str) -> dict[str, str]:
     lang = (lang or "").lower()
     return {
-        clip_id: idiomas[lang]
-        for clip_id, idiomas in CLIPS.items()
-        if lang in idiomas
+        audio_id: langs[lang]
+        for audio_id, langs in AUDIOS.items()
+        if lang in langs
     }

@@ -1,10 +1,8 @@
 fastapi==0.141.1
 uvicorn[standard]==0.52.0
 httpx==0.28.1
-edge-tts==7.2.8
-# TTS en local, el de por defecto. Arrastra onnxruntime, que son ~58 MB en la
-# imagen: es el precio de bajar el TTS de 1.320 ms a 205 ms y quitarse la
-# dependencia de Microsoft. Con TTS_PROVIDER=edge no se usa.
+# TTS en local, el único. Arrastra onnxruntime, que son ~58 MB en la imagen: es
+# el precio de bajar el TTS de 1.320 ms a 205 ms y no depender de Microsoft.
 piper-tts==1.6.0
 # Para reducir la foto antes de mandarla a Groq, que cobra por píxeles.
 pillow==12.3.0
