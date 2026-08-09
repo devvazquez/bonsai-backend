@@ -128,6 +128,17 @@ class MemoryEdit(BaseModel):
 # --------------------------------------------------------------------------
 LANG_NAMES = {"ca": "Catalan", "es": "Spanish", "en": "English"}
 
+DEFAULT_LOOK_PROMPT = "What is in front of me? Tell me in a sentence or two."
+
+# --------------------------------------------------------------------------
+# Conversation history
+# --------------------------------------------------------------------------
+# How many earlier turns from this device ride along as context, and how far
+# back they can be from. Text only (see memory.recent_history): a handful of
+# short sentences cost only tens of tokens, nothing like replaying a photo.
+HISTORY_MAX_TURNS = int(os.environ.get("HISTORY_MAX_TURNS", "3"))
+HISTORY_MAX_MINUTES = int(os.environ.get("HISTORY_MAX_MINUTES", "10"))
+
 # --------------------------------------------------------------------------
 # Tools the device declares
 # --------------------------------------------------------------------------
@@ -445,7 +456,16 @@ async def _vision_step(
 
     t0 = time.perf_counter()
     memory_context = memory.get_memory_context(req.deviceId)
+    history = memory.recent_history(req.deviceId, HISTORY_MAX_TURNS, HISTORY_MAX_MINUTES)
     timings["memory_ms"] = int((time.perf_counter() - t0) * 1000)
+
+    # Earlier turns go first (oldest to newest), then the wake-word preamble
+    # (the "just now" of /ask), then the current photo and question.
+    history_turns = tuple(
+        turn for user_text, assistant_text in history
+        for turn in (("user", user_text), ("assistant", assistant_text))
+    )
+    full_preamble = history_turns + tuple(preamble or ())
 
     # Shrink the photo if needed. Goes to a thread because Pillow is pure CPU
     # and would block the event loop on a 12 MP photo.
@@ -467,8 +487,8 @@ async def _vision_step(
             api_key=api_key,
             image_base64=image_b64,
             system_prompt=build_system_prompt(lang, memory_context, tools),
-            user_prompt=req.prompt or "What is in front of me? Tell me in a sentence or two.",
-            preamble=preamble,
+            user_prompt=req.prompt or DEFAULT_LOOK_PROMPT,
+            preamble=full_preamble,
             tools=tools,
         )
     except VisionRateLimit as e:
@@ -527,7 +547,24 @@ async def look(req: LookRequest) -> Response:
     `lang` next time.
     """
     plan = await _audio_plan(req.audioFormat, req.lang, req.sampleRate)
+
+    t0 = time.perf_counter()
+    photo = base64.b64decode(req.image)
+    capture_id, _path = await asyncio.to_thread(memory.save_capture, req.deviceId, photo)
+
     text, headers = await _describe(req)
+
+    # Saved after the fact, like /ask: this is what feeds the next request's
+    # history (see memory.recent_history), so it needs the final reply, not a
+    # half-done row.
+    await asyncio.to_thread(
+        memory.finish_capture, capture_id,
+        transcript=req.prompt or DEFAULT_LOOK_PROMPT, reply=text,
+        vision_ms=int(headers.get("X-Bonsai-Vision-Ms", 0)),
+        total_ms=int((time.perf_counter() - t0) * 1000),
+    )
+    await asyncio.to_thread(memory.prune_captures, req.deviceId)
+
     return await _speak_response(text, plan, headers)
 
 

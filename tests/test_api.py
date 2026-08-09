@@ -263,8 +263,10 @@ async def main_test():
         # 4. /look still has no preamble (its behaviour is unchanged)
         # ---------------------------------------------------------------
         sent.clear()
+        # A fresh deviceId: "ulleres-01" already has history from check 1, and
+        # this test is specifically about the wake preamble, not history.
         r = await c.post("/look", json={
-            "image": base64.b64encode(PHOTO).decode(), "deviceId": "ulleres-01",
+            "image": base64.b64encode(PHOTO).decode(), "deviceId": "look-no-preamble",
             "audioFormat": "wav",
         })
         check("/look still works", r.status_code == 200, r.text[:200])
@@ -436,12 +438,12 @@ async def main_test():
         use(silent)
         r = await c.post("/ask", content=frame(PHOTO, PCM))
         check("nothing understood -> 422", r.status_code == 422, r.text[:140])
-        # 8 = the good one, the overlapped one, the m4a, the paused one, the
-        # silent one, the 3 ms one, the 31 s one and this one. The ones that
-        # fail before the photo is complete (bad frame, made-up format) leave
-        # no row.
+        # 9 = the good one, the overlapped one, the m4a, the paused one, the
+        # silent one, the 3 ms one, the 31 s one, this one, and the /look call
+        # from check 4 (/look persists a capture too, now). The ones that fail
+        # before the photo is complete (bad frame, made-up format) leave no row.
         check("the photo is stored anyway",
-              len(memory.list_captures()) == 8, str(len(memory.list_captures())))
+              len(memory.list_captures()) == 9, str(len(memory.list_captures())))
 
         # 429 from whisper's quota
         def out_of_quota(request):
@@ -592,6 +594,73 @@ async def main_test():
         r = await c.post("/ask?deviceId=tools", content=frame(PHOTO, PCM),
                          headers={"X-Bonsai-Tools": "not base64 json"})
         check("a broken X-Bonsai-Tools -> 400", r.status_code == 400, r.text[:120])
+
+        # ---------------------------------------------------------------
+        # 10. Conversation history: recent turns feed into the next call
+        # ---------------------------------------------------------------
+        counter = {"n": 0}
+
+        def counting_reply(request):
+            sent.append(request)
+            counter["n"] += 1
+            return httpx.Response(200, json={"choices": [{"message": {
+                "content": f"Reply {counter['n']}."}}]})
+
+        use(counting_reply)
+        HIST_DEVICE = "history"
+
+        r = await c.post("/look", json={
+            "image": base64.b64encode(PHOTO).decode(), "deviceId": HIST_DEVICE,
+            "prompt": "Question 1", "audioFormat": "wav",
+        })
+        check("/look now persists a capture, like /ask already did",
+              r.status_code == 200 and len(memory.list_captures(HIST_DEVICE)) == 1,
+              f"{r.status_code} {len(memory.list_captures(HIST_DEVICE))}")
+        row = memory.list_captures(HIST_DEVICE)[0]
+        check("the capture stores the prompt and the reply, text only",
+              row["transcript"] == "Question 1" and row["reply"] == "Reply 1.",
+              str(row))
+        msgs = json.loads(sent[-1].content)["messages"]
+        check("a device's first call carries no history yet", len(msgs) == 2,
+              str([m["role"] for m in msgs]))
+
+        r = await c.post("/look", json={
+            "image": base64.b64encode(PHOTO).decode(), "deviceId": HIST_DEVICE,
+            "prompt": "Question 2", "audioFormat": "wav",
+        })
+        msgs = json.loads(sent[-1].content)["messages"]
+        check("the second call carries one history turn",
+              len(msgs) == 4, str([m["role"] for m in msgs]))
+        check("the history's user turn is plain text, not an image",
+              msgs[1] == {"role": "user", "content": "Question 1"}, str(msgs[1]))
+        check("the history's assistant turn is the earlier reply",
+              msgs[2] == {"role": "assistant", "content": "Reply 1."}, str(msgs[2]))
+        check("the current turn still carries the photo",
+              isinstance(msgs[-1]["content"], list)
+              and any(p.get("type") == "image_url" for p in msgs[-1]["content"]),
+              str(msgs[-1]))
+
+        # Three more calls: with a cap of HISTORY_MAX_TURNS, the oldest ages out.
+        for i in range(3, 6):
+            await c.post("/look", json={
+                "image": base64.b64encode(PHOTO).decode(), "deviceId": HIST_DEVICE,
+                "prompt": f"Question {i}", "audioFormat": "wav",
+            })
+        msgs = json.loads(sent[-1].content)["messages"]
+        history_users = [m["content"] for m in msgs[1:-1] if m["role"] == "user"]
+        check(f"history caps at HISTORY_MAX_TURNS ({main.HISTORY_MAX_TURNS})",
+              len(history_users) == main.HISTORY_MAX_TURNS, str(history_users))
+        check("Question 1 has aged out of the window",
+              "Question 1" not in history_users, str(history_users))
+
+        # A different device sees none of this: history is per deviceId.
+        r = await c.post("/look", json={
+            "image": base64.b64encode(PHOTO).decode(), "deviceId": "history-other",
+            "prompt": "Unrelated question", "audioFormat": "wav",
+        })
+        msgs = json.loads(sent[-1].content)["messages"]
+        check("history does not leak across devices", len(msgs) == 2,
+              str([m["role"] for m in msgs]))
 
     use(respond)
     await real_socket()

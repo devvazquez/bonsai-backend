@@ -228,8 +228,9 @@ Abans de la foto se li donen per dits dos torns de conversa —
 conversa. **Han de coincidir amb el clip que sonen les ulleres** o li estaràs
 explicant al model una conversa que no ha passat.
 
-Cada petició deixa la foto a `captures/` i una fila a la taula `captures`,
-visible a `/admin`. Se'n conserven les 100 últimes per dispositiu.
+Cada petició (de `/look` també) deixa la foto a `captures/` i una fila a la
+taula `captures`, visible a `/admin`. Se'n conserven les 100 últimes per
+dispositiu, i és d'on surt l'historial de conversa (més avall).
 
 | Codi | Vol dir |
 | --- | --- |
@@ -306,6 +307,19 @@ L'àudio arriba igualment: si el model crida una tool i no diu res (que és el
 que solen fer), el servidor respon «Fet.» en comptes de deixar les ulleres
 mudes. Hi ha un topall de mida a les definicions (`TOOLS_MAX_CHARS`, 2.000
 caràcters) perquè són tokens de prompt a cada petició.
+
+### Historial de conversa
+
+`/look` i `/ask` deixen les últimes converses d'un dispositiu com a context de
+les següents: si preguntes «i en castellà?» just després d'una foto, el model
+sap de què li parles. Només hi va **text** — la pregunta i la resposta, mai la
+foto—, perquè Groq cobra tokens per imatge i una foto de fa un minut ja no és
+«el que tinc davant», és confusió.
+
+Es controla amb `HISTORY_MAX_TURNS` (per defecte 3) i `HISTORY_MAX_MINUTES`
+(per defecte 10): passats els minuts o el compte de torns, la conversa més
+antiga es queda fora. És per `deviceId`, així que no es barreja entre
+dispositius. Posar qualsevol dels dos a `0` ho desactiva.
 
 ### Capçaleres `X-Bonsai-*`
 
@@ -389,6 +403,7 @@ En català només hi ha tres veus al repositori de Piper; la comparativa és a
 | `GROQ_VISION_MODEL` | `qwen/qwen3.6-27b` | Model de visió |
 | `GROQ_STT_MODEL` | `whisper-large-v3-turbo` | Model de transcripció de `/ask` |
 | `ASK_MAX_AUDIO_SECONDS` | `30` | Topall de gravació de `/ask` |
+| `HISTORY_MAX_TURNS` / `HISTORY_MAX_MINUTES` | `3` / `10` | Historial de conversa passat al model. `0` ho desactiva |
 | `ASK_SILENCE_TIMEOUT_SECONDS` | `15` | Sense cap tros del micròfon en tant de temps, `408` |
 | `ASK_WAKE_PHRASE` / `ASK_WAKE_REPLY` | `Hey Bonsai!` / `Diga’m!` | Els dos torns donats per dits |
 | `TOOLS_MAX_CHARS` | `2000` | Topall de les definicions de tools |

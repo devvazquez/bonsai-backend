@@ -315,6 +315,35 @@ cabecera WAV, el modelo). Ojo: `stt.py` hace `from .vision import get_client`,
 así que parchear solo `vision.get_client` no le llega — hay que tocar los dos
 módulos.
 
+## Historial de conversa: solo texto, nunca la foto otra vez
+
+`/look` y `/ask` pasan al modelo las últimas conversaciones de ese `deviceId`
+como contexto (`memory.recent_history`), para que "¿y en castellano?" después
+de una foto tenga sentido sin repetir la pregunta.
+
+**Nunca se reenvía la imagen.** Groq cobra tokens por foto (~2.656 a 896 px), y
+reenviar 3 fotos anteriores en cada petición agotaría los 8.000/minuto en una
+sola llamada. Lo que se guarda de cada turno es la pregunta y la respuesta en
+texto —eso sí, con nombre engañoso: la columna se llama `transcript` aunque en
+`/look` no haya transcripción, es literalmente el `prompt` que se usó—, y eso
+es lo que se pasa como turnos `user`/`assistant` antes del turno actual.
+
+Se limita por dos lados a la vez, `HISTORY_MAX_TURNS` y `HISTORY_MAX_MINUTES`:
+por turnos porque si no la conversación crece sin tope, y por tiempo porque una
+foto de hace una hora ya no es "esto que tengo delante", es una confusión. Los
+dos a la vez y no uno solo: con solo turnos, una conversación de ayer que
+nunca se cerró seguiría contando; con solo minutos, una charla muy seguida
+metería demasiados turnos.
+
+El orden de los mensajes es: system → historial (del más antiguo al más
+reciente) → preámbulo de la palabra de activación (solo en `/ask`) → turno
+actual con la foto. El historial es lo que pasó antes; el preámbulo es "ahora
+mismo".
+
+**`/look` antes no guardaba nada en `captures`.** Se le añadió el mismo
+guardado que ya tenía `/ask` (foto + `transcript` + `reply` + tiempos) para que
+el historial también funcione preguntando por texto, no solo por voz.
+
 ## Tools: las declara la ESP32, el backend solo hace de puente
 
 Frases como «Hey Bonsai, canvia l'idioma a espanyol» tienen que disparar una

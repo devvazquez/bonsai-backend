@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 import sqlite3
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 
@@ -280,6 +280,29 @@ def list_captures(device_id: str | None = None, limit: int = 50) -> list[dict[st
     params.append(limit)
     with _connect() as conn:
         return [dict(r) for r in conn.execute(sql, params)]
+
+
+def recent_history(device_id: str, max_turns: int, max_minutes: int) -> list[tuple[str, str]]:
+    """Last conversation turns for this device, as (user text, assistant text).
+
+    Text only, oldest first — the photo is never replayed. Groq charges tokens
+    per image, and a shot from a while ago is not "context" anymore: the person
+    doesn't have it in front of them. Windowed by time too, so a question from
+    an hour ago doesn't leak into "just now".
+    """
+    if max_turns <= 0 or max_minutes <= 0:
+        return []
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=max_minutes)).isoformat()
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT transcript, reply FROM captures "
+            "WHERE device_id = ? AND created_at >= ? "
+            "AND transcript IS NOT NULL AND transcript != '' "
+            "AND reply IS NOT NULL AND reply != '' "
+            "ORDER BY created_at DESC LIMIT ?",
+            (device_id, cutoff, max_turns),
+        ).fetchall()
+    return [(r["transcript"], r["reply"]) for r in reversed(rows)]
 
 
 def get_memory_context(device_id: str) -> str:
