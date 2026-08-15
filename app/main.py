@@ -11,11 +11,11 @@ person wearing the glasses is saying. Whisper turbo on Groq (`stt.py`)
 transcribes it and that sentence becomes the question put to the vision model.
 
 The rest is service: `/memory` for memories, `/speak` for standalone
-text-to-speech, the `/provar` page to try it from a phone and the `/admin`
-panel (`panel.py`) to manage the database. There is no web app in the main path.
+text-to-speech, the `/admin`panel (`panel.py`) to manage the database.
+ There is no web app in the main path.
 
-Everything that is API hangs off `/api/v1`. Pages do not: `/provar` and
-`/admin` open in a browser and are not versioned.
+Everything that is API hangs off `/api/v1`. Pages do not:`/admin` opens 
+in a browser and are not versioned.
 """
 
 from __future__ import annotations
@@ -202,37 +202,6 @@ def build_system_prompt(lang: str, memory_context: str,
             "now»). Never go silent just because you used a tool."
         )
     return "\n\n".join(parts)
-
-
-# --------------------------------------------------------------------------
-# Endpoints
-# --------------------------------------------------------------------------
-def _page(name: str) -> HTMLResponse:
-    """Serves an HTML file from static/. No token: it is a page, not data.
-
-    What is behind it is protected: the page asks the API for data with the
-    X-API-Token header, so serving the HTML exposes nothing.
-    """
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", name)
-    try:
-        with open(path, encoding="utf-8") as f:
-            return HTMLResponse(f.read())
-    except FileNotFoundError:
-        raise HTTPException(404, f"static/{name} is missing on the server.") from None
-
-
-# Two names for the same page: "provar" is the Catalan spelling, which is the
-# project's language, and "probar" is already written down in places and in
-# somebody's bookmarks. Dropping either would only break links.
-@app.get("/provar", response_class=HTMLResponse)
-@app.get("/probar", response_class=HTMLResponse)
-def test_page() -> HTMLResponse:
-    """Test page for a phone: takes a photo and plays the answer.
-
-    Served by the backend itself so there is no CORS and nothing else to run:
-    open the server's IP on the phone and that is it.
-    """
-    return _page("probar.html")
 
 
 @api.get("/health")
