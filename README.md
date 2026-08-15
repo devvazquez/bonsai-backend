@@ -1,8 +1,9 @@
+**TODO:**
+ - Eliminar /provar
 # Bonsai Backend
 
 Backend de **Bonsai**, unes ulleres intel·ligents que expliquen en veu alta què
-tens al davant: per orientar-te, per llegir un cartell o un menú, per saber què
-és un objecte o simplement per curiositat.
+tens al davant.
 
 ```mermaid
 flowchart LR
@@ -17,32 +18,19 @@ flowchart LR
     A -- I2S --> F["MAX98357A"]
 ```
 
-**L'ESP32 crida l'API directament**, sense cap aplicació web al mig. Per això
-els dos endpoints d'imatge estan fets a mida del microcontrolador: reben la
-foto i tornen l'àudio en cru i en streaming, llest per a l'I2S.
+Components del backend:
 
-Les peces:
-
-- **Veu a text**: **Whisper turbo** a Groq, només per a `/ask`. Es factura per
-  segons d'àudio, no per tokens: no toca la quota de les fotos.
-- **Visió**: **Qwen** a Groq (`qwen/qwen3.6-27b`), 552 ms i molt regular.
-- **Veu**: **Piper** en local (205 ms, veu catalana `ca_ES-upc_ona-medium`),
-  sense xarxa i sense cap clau.
+- **STT**: **whisper-large-v3-turbo** a Groq, només per a `/ask`.
+- **Visió**: **qwen/qwen3.6-27b** a Groq. Model multimodal d'Alibaba que suporta imatges.
+- **TTS**: **Piper TTS** en local i rapid. Es clau per al suport de veus en català (ca-upc_ona).
 - **Memòria**: SQLite, un fitxer, sense serveis externs.
-
-Amb la configuració per defecte, el **primer byte d'àudio surt a ~1,0-1,8 s**
-des que arriba la foto. Totes les xifres d'aquest README estan mesurades, no
-estimades — el detall i el perquè de cada decisió és a
-**[docs/BENCHMARKS.md](docs/BENCHMARKS.md)** i a
-**[CLAUDE.md](CLAUDE.md)**.
 
 ---
 
 ## Inici ràpid
 
 Necessites **Python 3.11+** i una clau gratuïta de
-[console.groq.com](https://console.groq.com). La veu no necessita cap clau:
-Piper és local i es baixa sol (63 MB) la primera vegada.
+[console.groq.com](https://console.groq.com).
 
 ```bash
 git clone https://github.com/devvazquez/bonsai-backend.git
@@ -50,16 +38,14 @@ cd bonsai-backend
 ./scripts/run-local.sh          # Windows: .\scripts\run-local.ps1
 ```
 
-El primer cop crea el `.env` i s'atura perquè hi posis la `GROQ_API_KEY`. El
-tornes a executar i arrenca amb recàrrega automàtica.
+El primer cop crea el `.env` i s'atura perquè estableixis la `GROQ_API_KEY`. Un cop establerta simplement reinicia.
 
 | On | Què hi ha |
 | --- | --- |
 | <http://127.0.0.1:8080/api/v1> | L'API |
-| `/docs` | Swagger, amb reproductor per escoltar les respostes |
-| `/provar` | Fer una foto des del mòbil i escoltar la resposta |
-| `/admin` | El panell de la base de dades (només amb `ADMIN_PASSWORD`) |
-| `/health` | Estat del servei. Sense autenticació |
+| `/docs` | Servit per Swagger, amb live testing. |
+| `/admin` | El panell de la base de dades (només amb `ADMIN_PASSWORD`). |
+| `/health` | Estat del servei. Sense autenticació. |
 
 <details>
 <summary>Arrencar-ho a mà, sense l'script</summary>
@@ -75,49 +61,21 @@ El punt d'entrada és **`app.main:app`**, no `main:app`: el codi viu al paquet
 `app/`.
 </details>
 
-<details>
-<summary>Terminal de proves, sense dependències</summary>
-
-```bash
-python tests/smoke.py       # amb el servidor ja engegat
-```
-
-```
-bonsai> describe image.png              # imatge -> text -> àudio, amb temps
-bonsai> speak Hola, les ulleres funcionen
-bonsai> remember Al Biel li agrada el cafè sense sucre
-bonsai> help
-```
-
-Compte: `describe` gasta quota de Groq de veritat. Per provar sense gastar
-res, `python tests/test_api.py`.
-</details>
-
 ---
 
-## Les dues pàgines
+## La pàgina admin
 
-Les serveix el mateix backend, sense dependències ni CORS.
-
-**`/provar`** — fes una foto des del mòbil i escolta la resposta. Redueix la
-imatge abans de pujar-la, deixa triar l'idioma i ensenya el desglossament de
-temps.
-
-<img src="docs/img/provar.png" width="320" alt="Pàgina /provar en un mòbil: idioma, pregunta opcional i el botó de fer una foto">
-
-**`/admin`** — explorar qualsevol taula, crear-ne, afegir columnes, editar
-files i executar SQL a mà. També és per on es toquen els records.
+**`/admin`** — permet explorar qualsevol taula, crear-ne, afegir columnes, editar
+files i executar SQL a mà. També és per on es editen els records.
 
 <img src="docs/img/panel.png" width="640" alt="Panell /admin amb la llista de taules a l'esquerra i les files de memories a la dreta">
 
 <img src="docs/img/panel-estructura.png" width="640" alt="Pestanya Estructura del panell, amb el CREATE TABLE, les columnes i els índexs">
 
-Això és **accés SQL complet a la base de dades**, així que la ruta només
-existeix si defineixes `ADMIN_PASSWORD` (`openssl rand -hex 16`); sense la
-variable torna 404.
+Com això permet **accés SQL complet a la base de dades**, la ruta només
+existeix si defineixes `ADMIN_PASSWORD` (`openssl rand -hex 16`). 
 
-> **Ara mateix `/admin` no arriba a muntar-se** per un cap solt al codi, així
-> que dona 404 tinguis o no la contrasenya. Apuntat a `CLAUDE.md`.
+Sense la variable torna 404.
 
 ---
 
@@ -125,30 +83,23 @@ variable torna 404.
 
 ### Autenticació i versionat
 
-**Tot l'API viu sota `/api/v1`**: `POST /api/v1/look`, `POST /api/v1/ask`, etc.
-Les taules i els exemples d'aquí sota escriuen la ruta curta per no repetir el
-prefix a cada línia, però la petició de veritat el porta.
+Tot l'API viu sota **/api/v1**: `POST /api/v1/look`, `POST /api/v1/ask`, etc.
 
-El prefix hi és perquè el dia que calgui canviar el cos d'`/ask` o el format
-d'una resposta es pugui muntar `/api/v2` al costat, sense deixar tirades les
-ulleres que encara no tinguin el firmware nou. **No hi ha rutes sense prefix**:
-`/look` i `/health` a seques tornen 404.
+El prefix es util perque si algun dia canvia la API, no deixin de funcionnar les
+ulleres que encara no tinguin el firmware nou.
 
-Les pàgines **no** van versionades, perquè s'obren al navegador i no són API:
-`/provar` (amb l'àlies `/probar`) i `/admin`.
-
-Tots els endpoints excepte `/health` i les pàgines demanen la capçalera
+Tots els endpoints excepte `api/v1/health` i `/admin` demanen la capçalera
 `X-API-Token` si `BONSAI_API_TOKEN` està definit. `/admin` no fa servir el
-token: té la seva pròpia contrasenya.
+token (utilitza `ADMIN_PASSWORD`). 
 
 ### Endpoints
 
-| Mètode | Ruta (afegeix-hi `/api/v1`) | Descripció |
+| Mètode | Ruta (prefix `/api/v1`) | Descripció |
 | --- | --- | --- |
-| `POST` | `/look` | **Principal**: foto → àudio en cru i en streaming |
-| `POST` | `/ask` | Foto + pregunta dita en veu alta → àudio |
-| `GET`/`POST` | `/speak?text=...&lang=ca` | Només text a veu |
-| `GET` | `/audios?lang=ca` | Les frases fixes que porten les ulleres |
+| `POST` | `/look` | Foto → àudio en cru i en streaming |
+| `POST` | `/ask` | Foto + pregunta dita en àudio → àudio |
+| `GET`/`POST` | `/speak?text=...&lang=ca` | Només TTS |
+| `GET` | `/audios?lang=ca` | Llistar les frases per defecte que porten les ulleres |
 | `GET` | `/audios/{id}?lang=ca` | Una d'aquestes frases, com a àudio |
 | `POST`/`GET` | `/memory` | Dispositius i records |
 | `PATCH`/`DELETE` | `/memory/{deviceId}/{id}` | Corregeix o esborra un record |
