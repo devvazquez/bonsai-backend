@@ -161,46 +161,86 @@ def _clean_tools(tools: list[dict] | None) -> list[dict]:
 
 def build_system_prompt(lang: str, memory_context: str,
                         tools: list[dict] | None = None) -> str:
+    lang = (lang or "ca").lower()
     today = datetime.now().strftime("%A, %d %B %Y")
-    lang_name = LANG_NAMES.get(lang, "Catalan")
 
-    parts = [
-        "You are the vision assistant of the Bonsai glasses: you tell whoever "
-        "is wearing them what is in front of them, whether to get their "
-        "bearings, to read something, to identify an object or just out of "
-        "curiosity.",
-        f"Today is {today}.",
-        # The answer becomes speech: every extra sentence is seconds of waiting.
-        "Answer in 1 or 2 short sentences, as if saying it out loud: what "
-        "matters first and no filler. Do not start with «in the image there "
-        "is» or anything like it, and do not describe the background or "
-        "irrelevant detail. Readable text or anything dangerous comes first. "
-        "If you are asked something specific, answer only that. "
-        f"ALWAYS answer in {lang_name}.",
-        # Models produce place names with total confidence and get them wrong:
-        # given a square in Reus, one said Vilanova i la Geltrú and another the
-        # plaça Reial in Barcelona. The wearer cannot tell it is made up, so an
-        # invented name misleads more than no name at all.
-        "Never guess proper nouns: not cities, squares, streets, shops or "
-        "monuments. Say them only if you are reading them on a sign in the "
-        "image, and then say that you are reading them. Otherwise describe the "
-        "place for what it is. When in doubt, leave the name out: «a large "
-        "square with terraces» beats a wrong name.",
-    ]
-    if memory_context:
-        parts.append(
-            "Things the person has asked you to remember before:\n" + memory_context
-        )
-    if tools:
-        # Models usually answer with an empty `content` when they call a tool,
-        # which would leave the glasses silent. We ask for a sentence anyway;
-        # TOOL_ACK covers the times it does not comply.
-        parts.append(
-            "You have tools available. When the person asks for something one "
-            "of them does, call it — and answer out loud as well, with a short "
-            "sentence confirming it (for example «Right, I'll speak Spanish "
-            "now»). Never go silent just because you used a tool."
-        )
+    if lang == "ca":
+        parts = [
+            "Ets l'assistent de visió de les ulleres Bonsai: expliques a qui les "
+            "porta què té al davant, sigui per orientar-se, llegir alguna cosa, "
+            "identificar un objecte o per simple curiositat.",
+            f"Avui és {today}.",
+            "Instruccions de resposta:\n"
+            "- Respon en 1 o 2 frases curtes, com si ho diguessis en veu alta: "
+            "el més important primer i sense farciment.\n"
+            "- No comencis mai amb «a la imatge hi ha», «es veu» ni frases similars.\n"
+            "- No descriguis fons ni detalls irrellevants. El text llegible o "
+            "qualsevol perill/obstacle té prioritat absoluta.\n"
+            "- Si et fan una pregunta concreta, respon únicament a allò demanat.\n"
+            "- Fes servir un català estàndard, normatiu, precís i natural. No "
+            "inventis mai paraules ni barregis idiomes.",
+            "Noms propis i llocs:\n"
+            "No intentis endevinar mai noms propis: ni ciutats, places, carrers, "
+            "botigues ni monuments. Digues-los només si els estàs llegint literalment "
+            "en un rètol o cartell de la imatge (i especifica que ho estàs llegint). "
+            "Davant del dubte, descriu el lloc sense posar-li nom: «una plaça gran amb "
+            "terrasses» és millor que un nom inventat.",
+            "Exemples d'estil i to:\n"
+            "- «Tens al davant un volant de simulador de conducció connectat a un ordinador, al costat d'un llit.»\n"
+            "- «Compte amb el graó que hi ha a sota. A la dreta hi ha una ampolla d'aigua sobre la taula.»\n"
+            "- «El cartell de la porta diu «Sortida d'emergència».»",
+        ]
+        if memory_context:
+            parts.append(
+                "Coses que la persona t'ha demanat que recordis anteriorment:\n" + memory_context
+            )
+        if tools:
+            parts.append(
+                "Tens eines disponibles. Quan la persona demani alguna cosa que una d'elles "
+                "pot fer, crida-la i respon també en veu alta amb una frase curta confirmant-ho "
+                "(per exemple «Entesos, ara parlaré en català»). Never go silent just because you used a tool."
+            )
+
+    elif lang == "es":
+        parts = [
+            "Eres el asistente visual de las gafas Bonsai: describes a quien las "
+            "lleva qué tiene delante, sea para orientarse, leer algo, identificar "
+            "un objeto o por curiosidad.",
+            f"Hoy es {today}.",
+            "Instrucciones de respuesta:\n"
+            "- Responde en 1 o 2 frases cortas, como hablándole en voz alta: lo "
+            "importante primero y sin relleno.\n"
+            "- No empieces con «en la imagen hay» ni similar. Prioriza texto "
+            "legible o posibles peligros.\n"
+            "- Responde SIEMPRE en español claro y natural.",
+            "No inventes nombres propios de lugares ni calles salvo que los leas en un cartel.",
+        ]
+        if memory_context:
+            parts.append("Cosas que la persona te ha pedido recordar:\n" + memory_context)
+        if tools:
+            parts.append(
+                "Tienes herramientas disponibles. Si usas una, confirma siempre en voz alta con una frase corta."
+            )
+
+    else:  # en / fallback
+        parts = [
+            "You are the vision assistant of the Bonsai glasses: you tell whoever "
+            "is wearing them what is in front of them, whether to get their "
+            "bearings, to read something, to identify an object or just out of "
+            "curiosity.",
+            f"Today is {today}.",
+            "Answer in 1 or 2 short sentences, as if saying it out loud: what "
+            "matters first and no filler. Do not start with «in the image there "
+            "is». Readable text or anything dangerous comes first. ALWAYS answer in English.",
+            "Never guess proper nouns (cities, streets, monuments) unless reading them on a sign.",
+        ]
+        if memory_context:
+            parts.append("Things the person has asked you to remember before:\n" + memory_context)
+        if tools:
+            parts.append(
+                "You have tools available. When using one, always reply out loud with a short confirmation."
+            )
+
     return "\n\n".join(parts)
 
 
@@ -311,37 +351,21 @@ _AUDIO_RESPONSE: dict[int | str, dict[str, Any]] = {
 }
 
 
-async def _speak_response(
-    text: str, plan: dict[str, Any], headers: dict[str, str]
+async def _speak_response_stream(
+    sentence_stream: AsyncIterator[str],
+    plan: dict[str, Any],
+    headers: dict[str, str],
+    meta: dict[str, Any],
 ) -> Response:
-    """Turns the text into audio and streams it back.
-
-    The shared tail of /look and /ask: both end with a sentence to be said out
-    loud, in whatever format the I2S wants.
-    """
+    """Turns the sentence stream into audio chunks and streams them back."""
     fmt, rate = plan["format"], plan["rate"]
-    chunks = tts.stream_raw(text, plan["voice"], fmt, rate)
+    chunks = tts.stream_raw_sentences(sentence_stream, plan["voice"], fmt, rate)
 
-    exposed = sorted({*headers, "X-Bonsai-Text", "X-Bonsai-Tts",
-                      "X-Bonsai-Format", "X-Bonsai-Rate", "X-Bonsai-Bits",
-                      "X-Bonsai-Channels", "X-Bonsai-Voice"})
-    headers.update({
-        "X-Bonsai-Text": base64.b64encode(text.encode()).decode("ascii"),
-        # Kept even though there is nothing left to choose: /provar reads it.
-        "X-Bonsai-Tts": "piper",
-        "X-Bonsai-Format": fmt,
-        "X-Bonsai-Rate": str(rate),
-        "X-Bonsai-Bits": str(plan["bits"]),
-        "X-Bonsai-Channels": "1",
-        "X-Bonsai-Voice": plan["voice"],
-        # Without this the browser will not let JavaScript read the X-Bonsai-*.
-        "Access-Control-Expose-Headers": ", ".join(exposed),
-    })
-
-    # The first chunk is pulled before answering: if the TTS fails we are still
-    # in time to return a real error instead of an empty 200.
+    # Pull the first chunk so the response headers can carry the real values.
+    # By this time, Groq has already generated the text / tools.
     try:
         first = await anext(chunks)
+        print(f"  [stream] first audio chunk emitted | format={fmt}@{rate}Hz", flush=True)
     except StopAsyncIteration:
         raise HTTPException(502, "Piper returned no audio.") from None
     except Exception as e:
@@ -349,14 +373,27 @@ async def _speak_response(
             502, f"Failed to generate the audio: {describe_error(e)}"
         ) from e
 
-    # WAV is assembled whole before answering so the header carries the real
-    # lengths. With 0xFFFFFFFF a player cannot tell the duration: it shows 0:00
-    # and stays silent (seen testing /speak from /docs).
-    #
-    # Nothing is lost by not chunking it: wav is the browser format — the I2S
-    # takes pcm16 or mulaw, still streamed — and whoever asks for it waits for
-    # the whole file to play it anyway. With Piper that is the ~205 ms of
-    # synthesis.
+    full_text = meta.get("text") or ""
+    headers.update({
+        "X-Bonsai-Text": base64.b64encode(full_text.encode()).decode("ascii"),
+        "X-Bonsai-Tts": "piper",
+        "X-Bonsai-Format": fmt,
+        "X-Bonsai-Rate": str(rate),
+        "X-Bonsai-Bits": str(plan["bits"]),
+        "X-Bonsai-Channels": "1",
+        "X-Bonsai-Voice": plan["voice"],
+        "X-Bonsai-Vision-Ms": str(meta.get("vision_ms", 0)),
+    })
+    if meta.get("tools"):
+        headers["X-Bonsai-Tools"] = base64.b64encode(
+            json.dumps(meta["tools"]).encode()
+        ).decode("ascii")
+
+    exposed = sorted({*headers, "X-Bonsai-Text", "X-Bonsai-Tts",
+                      "X-Bonsai-Format", "X-Bonsai-Rate", "X-Bonsai-Bits",
+                      "X-Bonsai-Channels", "X-Bonsai-Voice", "X-Bonsai-Tools"})
+    headers["Access-Control-Expose-Headers"] = ", ".join(exposed)
+
     if fmt == "wav":
         data = first + b"".join([c async for c in chunks])
         return Response(
@@ -377,33 +414,21 @@ async def _speak_response(
     )
 
 
-async def _describe(
+async def _speak_response(
+    text: str, plan: dict[str, Any], headers: dict[str, str]
+) -> Response:
+    """Turns a complete text into audio (compatibility helper)."""
+    async def _single() -> AsyncIterator[str]:
+        yield text
+
+    meta = {"text": text, "vision_ms": int(headers.get("X-Bonsai-Vision-Ms", 0))}
+    return await _speak_response_stream(_single(), plan, headers, meta)
+
+
+async def _describe_stream(
     req: LookRequest, preamble: tuple[tuple[str, str], ...] | None = None
-) -> tuple[str, dict[str, str]]:
-    """The vision half of /look and /ask.
-
-    Returns the text plus headers detailing what produced it, so it can be
-    reported without a JSON body (the body is the audio).
-    """
-    text, timings, tool_calls = await _vision_step(req, preamble)
-    headers = {
-        "X-Bonsai-Model": vision.MODEL,
-        "X-Bonsai-Vision-Ms": str(timings.get("vision_ms", 0)),
-        # Shrinking a 12 MP photo is ~200-300 ms that, missing from here, throw
-        # off any measurement taken from outside.
-        "X-Bonsai-Resize-Ms": str(timings.get("resize_ms", 0)),
-    }
-    # Only present when the model actually asked for something, so the firmware
-    # does not have to tell "no tools requested" from "nothing to do".
-    if tool_calls:
-        headers["X-Bonsai-Tools"] = base64.b64encode(
-            json.dumps(tool_calls).encode()).decode("ascii")
-    return text, headers
-
-
-async def _vision_step(
-    req: LookRequest, preamble: tuple[tuple[str, str], ...] | None = None
-) -> tuple[str, dict[str, int], list[dict]]:
+) -> tuple[AsyncIterator[str], dict[str, Any], dict[str, str]]:
+    """The streaming vision half of /look and /ask."""
     api_key = vision.api_key()
     if not api_key:
         raise HTTPException(500, "GROQ_API_KEY is not configured on the server.")
@@ -416,8 +441,6 @@ async def _vision_step(
     memory_context = memory.get_memory_context(req.deviceId)
     timings["memory_ms"] = int((time.perf_counter() - t0) * 1000)
 
-    # Shrink the photo if needed. Goes to a thread because Pillow is pure CPU
-    # and would block the event loop on a 12 MP photo.
     image_b64 = req.image
     max_side = req.maxSide if req.maxSide is not None else (
         images.MAX_SIDE if images.ENABLED else 0
@@ -430,9 +453,8 @@ async def _vision_step(
         if image_info.get("resized"):
             timings["resize_ms"] = int((time.perf_counter() - t0) * 1000)
 
-    t0 = time.perf_counter()
     try:
-        description, tool_calls = await vision.describe_image(
+        raw_stream, meta = await vision.describe_image_stream(
             api_key=api_key,
             image_base64=image_b64,
             system_prompt=build_system_prompt(lang, memory_context, tools),
@@ -441,63 +463,63 @@ async def _vision_step(
             tools=tools,
         )
     except VisionRateLimit as e:
-        # 429 and not 502: the server is not broken, we just have to wait. This
-        # way the client can retry on its own instead of failing at the person.
         headers = {}
         if e.retry_after is not None:
             headers["Retry-After"] = str(max(1, round(e.retry_after)))
         raise HTTPException(429, str(e), headers=headers) from e
     except Exception as e:
-        # describe_error and not str(e): httpx timeouts carry an empty message
-        # and the client used to get a bare «Failed to describe the image: ».
         raise HTTPException(
             502, f"Failed to describe the image: {describe_error(e)}"
         ) from e
-    timings["vision_ms"] = int((time.perf_counter() - t0) * 1000)
 
-    if not description:
-        # A tool call with no text is the model's usual shape, not a failure:
-        # say something canned rather than leaving the glasses mute.
-        if tool_calls:
-            description = TOOL_ACK.get(lang, TOOL_ACK[tts.DEFAULT_LANG])
-        else:
-            raise HTTPException(502, "The vision model returned an empty answer.")
+    meta["resize_ms"] = timings.get("resize_ms", 0)
+    meta["memory_ms"] = timings.get("memory_ms", 0)
 
-    return description, timings, tool_calls
+    async def _safe_sentences() -> AsyncIterator[str]:
+        has_any = False
+        async for s in raw_stream:
+            has_any = True
+            yield s
+        if not has_any:
+            if meta.get("tools"):
+                fallback = TOOL_ACK.get(lang, TOOL_ACK[tts.DEFAULT_LANG])
+                meta["text"] = fallback
+                yield fallback
+            else:
+                raise HTTPException(502, "The vision model returned an empty answer.")
+
+    headers = {
+        "X-Bonsai-Model": vision.MODEL,
+        "X-Bonsai-Resize-Ms": str(meta["resize_ms"]),
+    }
+    return _safe_sentences(), meta, headers
+
+
+async def _describe(
+    req: LookRequest, preamble: tuple[tuple[str, str], ...] | None = None
+) -> tuple[str, dict[str, str]]:
+    """The non-streaming vision half of /look and /ask (compatibility wrapper)."""
+    stream, meta, headers = await _describe_stream(req, preamble)
+    sentences = []
+    async for s in stream:
+        sentences.append(s)
+    text = meta.get("text") or " ".join(sentences).strip()
+    headers["X-Bonsai-Vision-Ms"] = str(meta.get("vision_ms", 0))
+    if meta.get("tools"):
+        headers["X-Bonsai-Tools"] = base64.b64encode(
+            json.dumps(meta["tools"]).encode()
+        ).decode("ascii")
+    return text, headers
 
 
 @api.post("/look", dependencies=[Depends(require_token)],
           responses=_AUDIO_RESPONSE, response_class=Response)
 async def look(req: LookRequest) -> Response:
-    """The main endpoint: a photo goes in, streaming audio comes out.
-
-    Designed for the ESP32-S3 to call directly:
-
-    - The audio is raw, no base64: 33 % fewer bytes and nothing to decode on
-      the microcontroller.
-    - It starts arriving as soon as the TTS produces the first sentence, so the
-      ESP32 can play while the rest is synthesized. Since audio travels faster
-      than it is heard, from then on the download overlaps playback and stops
-      adding latency.
-    - With `pcm16` (the default) these are signed 16-bit samples exactly as the
-      MAX98357A's I2S wants them: written straight out, no header, no
-      conversion.
-
-    The text goes in the `X-Bonsai-Text` header (UTF-8 in base64, because HTTP
-    headers are ASCII), and the format in `X-Bonsai-Rate`, `-Bits` and
-    `-Channels`, so nothing has to be guessed when setting up the I2S.
-
-    **Tools.** The device may send a `tools` list saying what it can do, and if
-    the model decides to use one it comes back in `X-Bonsai-Tools` (base64 JSON,
-    `[{"name": "change_lang", "args": {"lang": "es"}}]`). The server neither
-    knows nor runs them: it is a bridge, so the catalogue lives only in the
-    firmware. `change_lang` in particular changes nothing here — there is no
-    per-device language stored — the glasses act on it and send a different
-    `lang` next time.
-    """
+    """The main endpoint: a photo goes in, streaming audio comes out."""
     plan = await _audio_plan(req.audioFormat, req.lang, req.sampleRate)
-    text, headers = await _describe(req)
-    return await _speak_response(text, plan, headers)
+    print(f"\n[look] request from {req.deviceId} (lang={req.lang or tts.DEFAULT_LANG}, format={plan['format']}@{plan['rate']}Hz)", flush=True)
+    sentence_stream, meta, headers = await _describe_stream(req)
+    return await _speak_response_stream(sentence_stream, plan, headers, meta)
 
 
 # --------------------------------------------------------------------------
@@ -768,6 +790,8 @@ async def ask(
             "which needs no voice.",
         )
 
+    print(f"\n[ask] request from {deviceId} (lang={lang or tts.DEFAULT_LANG}, micRate={micRate}) | transcribed in {stt_ms} ms: {transcript!r}", flush=True)
+
     request_model = LookRequest(
         image=image_b64,
         deviceId=deviceId,
@@ -780,17 +804,9 @@ async def ask(
     # Here is the difference with /look: the two wake-word turns are taken as
     # said, so it answers like someone continuing a conversation instead of
     # someone taking a lone order.
-    text, headers = await _describe(request_model, vision.VOICE_PREAMBLE)
-
-    total_ms = int((time.perf_counter() - t_total) * 1000)
-    await asyncio.to_thread(
-        memory.finish_capture, capture_id,
-        audio_secs=round(seconds, 2) if seconds is not None else None,
-        transcript=transcript, reply=text,
-        stt_ms=stt_ms, vision_ms=int(headers.get("X-Bonsai-Vision-Ms", 0)),
-        total_ms=total_ms,
+    sentence_stream, meta, headers = await _describe_stream(
+        request_model, vision.VOICE_PREAMBLE
     )
-    await asyncio.to_thread(memory.prune_captures, deviceId)
 
     headers.update({
         "X-Bonsai-Transcript": base64.b64encode(transcript.encode()).decode("ascii"),
@@ -809,7 +825,20 @@ async def ask(
     })
     if seconds is not None:
         headers["X-Bonsai-Audio-Secs"] = f"{seconds:.2f}"
-    return await _speak_response(text, plan, headers)
+
+    resp = await _speak_response_stream(sentence_stream, plan, headers, meta)
+
+    total_ms = int((time.perf_counter() - t_total) * 1000)
+    await asyncio.to_thread(
+        memory.finish_capture, capture_id,
+        audio_secs=round(seconds, 2) if seconds is not None else None,
+        transcript=transcript, reply=meta.get("text") or "",
+        stt_ms=stt_ms, vision_ms=int(meta.get("vision_ms", 0)),
+        total_ms=total_ms,
+    )
+    await asyncio.to_thread(memory.prune_captures, deviceId)
+
+    return resp
 
 
 # GET as well as POST, and not on a whim: a browser asks for audio with

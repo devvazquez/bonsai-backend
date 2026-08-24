@@ -16,6 +16,8 @@ import base64
 import json
 import os
 import re
+import time
+from typing import Any, AsyncIterator
 
 import httpx
 
@@ -197,7 +199,7 @@ def _tool_calls(message: dict) -> list[dict]:
     return calls
 
 
-async def describe_image(
+async def describe_image_stream(
     api_key: str,
     image_base64: str,
     system_prompt: str,
@@ -205,34 +207,21 @@ async def describe_image(
     timeout: float = 30.0,
     preamble: tuple[tuple[str, str], ...] | None = None,
     tools: list[dict] | None = None,
-) -> tuple[str, list[dict]]:
-    """Describes the image with Groq's vision model.
+) -> tuple[AsyncIterator[str], dict[str, Any]]:
+    """Describes the image with Groq's vision model using streaming.
 
-    Returns (text to say out loud, tool calls the model asked for).
-
-    `preamble` are ("user"/"assistant", text) turns inserted between the system
-    prompt and the message carrying the image. /ask uses it to take the wake
-    word as said (see VOICE_PREAMBLE).
-
-    `tools` are the actions the *device* says it can perform. We never run them:
-    they go to the model and whatever it picks comes straight back to the
-    firmware, which is the only side that knows what they mean.
+    Returns (sentence_stream, meta_dict).
+    meta_dict is populated with 'text', 'tools', and 'vision_ms' as streaming progresses.
     """
-    # Previous turns, if any, go between the system message and the image. The
-    # format here is OpenAI's, so they pass through as they are.
     previous = [{"role": role, "content": text} for role, text in (preamble or ())]
 
     payload = {
         "model": MODEL,
-        "temperature": 0.4,
-        # Safety ceiling: the answer is read out loud, so a long one is seconds
-        # of waiting. The real limit is the prompt (1-2 sentences); this only
-        # stops it running away.
+        "temperature": 0.1,
         "max_completion_tokens": 150,
-        # No step-by-step reasoning: it adds nothing to describing an image and
-        # only costs latency and tokens.
         "reasoning_effort": "none",
         "reasoning_format": "hidden",
+        "stream": True,
         "messages": [
             {"role": "system", "content": system_prompt},
             *previous,
@@ -243,8 +232,6 @@ async def describe_image(
                     {
                         "type": "image_url",
                         "image_url": {
-                            # Sniffed for real: this used to be a hardcoded
-                            # "image/jpeg" even when the image was a PNG.
                             "url": f"data:{sniff_mime(image_base64)};base64,{image_base64}"
                         },
                     },
@@ -253,33 +240,190 @@ async def describe_image(
         ],
     }
 
-    # Only added when the device sent tools, so a request without them goes out
-    # byte for byte as it always did.
     if tools:
         payload["tools"] = _as_openai_tools(tools)
         payload["tool_choice"] = "auto"
 
-    resp = await get_client().post(
-        GROQ_URL,
-        json=payload,
-        headers=auth_headers(api_key),
+    meta: dict[str, Any] = {"text": "", "tools": [], "vision_ms": 0}
+
+    async def _stream() -> AsyncIterator[str]:
+        t0 = time.perf_counter()
+        async with get_client().stream(
+            "POST",
+            GROQ_URL,
+            json=payload,
+            headers=auth_headers(api_key),
+            timeout=timeout,
+        ) as resp:
+            if resp.status_code == 429:
+                body = await resp.aread()
+                # Create a temporary response object to parse retry-after
+                temp_resp = httpx.Response(resp.status_code, headers=resp.headers, text=body.decode(errors="replace"))
+                raise VisionRateLimit(
+                    f"Groq quota spent: {temp_resp.text[:300]}",
+                    _seconds_to_wait(temp_resp),
+                )
+
+            if resp.status_code >= 400:
+                body = await resp.aread()
+                raise RuntimeError(f"Groq error ({resp.status_code}): {body.decode(errors='replace')[:300]}")
+
+            content_type = resp.headers.get("content-type", "")
+            tool_chunks: dict[int, dict] = {}
+            full_text_list: list[str] = []
+            buffer = ""
+            in_think = False
+            first_token = True
+
+            async for raw_line in resp.aiter_lines():
+                line = raw_line.strip()
+                if not line or line.startswith(":"):
+                    continue
+
+                # Handle plain JSON mock or response
+                if line.startswith("{") and not line.startswith("data:"):
+                    try:
+                        data = json.loads(line)
+                        choice = (data.get("choices") or [{}])[0]
+                        msg = choice.get("message") or {}
+                        text = _THINK_RE.sub("", msg.get("content") or "").strip()
+                        meta["text"] = text
+                        meta["tools"] = _tool_calls(msg)
+                        meta["vision_ms"] = int((time.perf_counter() - t0) * 1000)
+                        if text:
+                            yield text
+                        return
+                    except Exception:
+                        pass
+
+                if line.startswith("data:"):
+                    data_str = line[5:].strip()
+                    if data_str == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data_str)
+                    except Exception:
+                        continue
+                    choice = (chunk.get("choices") or [{}])[0]
+                    delta = choice.get("delta") or {}
+
+                    # Tool calls
+                    if "tool_calls" in delta and delta["tool_calls"]:
+                        for tc in delta["tool_calls"]:
+                            idx = tc.get("index", 0)
+                            if idx not in tool_chunks:
+                                tool_chunks[idx] = {"name": "", "args": ""}
+                            fn = tc.get("function") or {}
+                            if fn.get("name"):
+                                tool_chunks[idx]["name"] += fn["name"]
+                            if fn.get("arguments"):
+                                tool_chunks[idx]["args"] += fn["arguments"]
+
+                    content = delta.get("content") or ""
+                    if not content:
+                        continue
+
+                    if first_token:
+                        meta["first_token_ms"] = int((time.perf_counter() - t0) * 1000)
+                        first_token = False
+                        print(f"  [vision] TTFT (first token): {meta['first_token_ms']} ms", flush=True)
+
+                    full_text_list.append(content)
+                    buffer += content
+
+                    # Filter <think>...</think>
+                    while "<think>" in buffer:
+                        if "</think>" in buffer:
+                            start = buffer.find("<think>")
+                            end = buffer.find("</think>") + len("</think>")
+                            buffer = buffer[:start] + buffer[end:]
+                        else:
+                            in_think = True
+                            break
+                    if in_think:
+                        if "</think>" in buffer:
+                            end = buffer.find("</think>") + len("</think>")
+                            buffer = buffer[end:]
+                            in_think = False
+                        else:
+                            continue
+
+                    # Sentence splitter
+                    while True:
+                        m = re.search(r'([.!?\n]+)\s+', buffer)
+                        if m:
+                            end_idx = m.end()
+                            sentence = buffer[:end_idx].strip()
+                            buffer = buffer[end_idx:]
+                            if sentence:
+                                s_ms = int((time.perf_counter() - t0) * 1000)
+                                print(f"  [vision] sentence at {s_ms} ms: {sentence!r}", flush=True)
+                                yield sentence
+                        else:
+                            if len(buffer) > 80:
+                                m_comma = re.search(r'([,;:—])\s+', buffer)
+                                if m_comma and m_comma.end() < len(buffer):
+                                    end_idx = m_comma.end()
+                                    sentence = buffer[:end_idx].strip()
+                                    buffer = buffer[end_idx:]
+                                    if sentence:
+                                        s_ms = int((time.perf_counter() - t0) * 1000)
+                                        print(f"  [vision] sentence clause at {s_ms} ms: {sentence!r}", flush=True)
+                                        yield sentence
+                                        continue
+                            break
+
+            # Leftover buffer
+            rem = buffer.strip()
+            if rem:
+                s_ms = int((time.perf_counter() - t0) * 1000)
+                print(f"  [vision] final sentence at {s_ms} ms: {rem!r}", flush=True)
+                yield rem
+
+            meta["vision_ms"] = int((time.perf_counter() - t0) * 1000)
+            meta["text"] = "".join(full_text_list).strip()
+            print(f"  [vision] total Groq stream in {meta['vision_ms']} ms | reply: {meta['text']!r}", flush=True)
+
+            final_tools = []
+            for idx in sorted(tool_chunks):
+                tc = tool_chunks[idx]
+                name = tc["name"]
+                if not name:
+                    continue
+                try:
+                    args = json.loads(tc["args"] or "{}")
+                except Exception:
+                    continue
+                final_tools.append({"name": name, "args": args if isinstance(args, dict) else {}})
+            meta["tools"] = final_tools
+
+    return _stream(), meta
+
+
+async def describe_image(
+    api_key: str,
+    image_base64: str,
+    system_prompt: str,
+    user_prompt: str,
+    timeout: float = 30.0,
+    preamble: tuple[tuple[str, str], ...] | None = None,
+    tools: list[dict] | None = None,
+) -> tuple[str, list[dict]]:
+    """Describes the image with Groq's vision model (accumulated result)."""
+    stream, meta = await describe_image_stream(
+        api_key=api_key,
+        image_base64=image_base64,
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
         timeout=timeout,
+        preamble=preamble,
+        tools=tools,
     )
-
-    if resp.status_code == 429:
-        raise VisionRateLimit(
-            f"Groq quota spent: {resp.text[:300]}",
-            _seconds_to_wait(resp),
-        )
-
-    if resp.status_code >= 400:
-        raise RuntimeError(f"Groq error ({resp.status_code}): {resp.text[:300]}")
-
-    data = resp.json()
-    message = (data.get("choices") or [{}])[0].get("message") or {}
-    # Safety net in case the model ignores reasoning_format.
-    text = _THINK_RE.sub("", message.get("content") or "").strip()
-    return text, _tool_calls(message)
+    sentences = []
+    async for s in stream:
+        sentences.append(s)
+    text = meta.get("text") or " ".join(sentences).strip()
+    return text, meta.get("tools", [])
 
 
 async def warmup() -> bool:

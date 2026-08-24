@@ -13,6 +13,7 @@ import asyncio
 import io
 import os
 import threading
+import time
 import wave
 from typing import AsyncIterator, Iterator
 
@@ -32,7 +33,7 @@ VOICES_DIR = os.environ.get(
 # upc_ona-medium (this one), upc_ona-x_low and upc_pau-x_low (male, faster:
 # 145 ms vs 215, but 16 kHz and you can hear it).
 VOICES = {
-    "ca": "ca_ES-upc_ona-medium",
+    "ca": "ca_ES-upc_ona-x_low",
     "es": "es_ES-davefx-medium",
     "en": "en_GB-alba-medium",
 }
@@ -291,42 +292,55 @@ def _sync_chunks(text: str, voice: str) -> Iterator:
     return _loaded_voice(voice).synthesize(text)
 
 
-async def stream_raw(
-    text: str, voice: str, fmt: str = "pcm16", rate: int | None = None
+async def stream_raw_sentences(
+    sentences: AsyncIterator[str], voice: str, fmt: str = "pcm16", rate: int | None = None
 ) -> AsyncIterator[bytes]:
-    """Emits audio as Piper produces it.
+    """Emits audio as Piper synthesizes each incoming sentence in the stream.
 
-    Piper yields one chunk per sentence, so the ESP32 can start playing the
-    first while the second is synthesized; from then on the download outruns
-    playback and stops counting. Runs in a thread because Piper is synchronous.
+    Runs Piper synthesis in worker threads per sentence, yielding converted audio chunks
+    as soon as each sentence finishes synthesis.
     """
     if fmt not in FORMATS:
         raise ValueError(
             f"Unknown audio format: {fmt!r}. Use one of: {', '.join(FORMATS)}"
         )
 
-    queue: asyncio.Queue = asyncio.Queue()
-    loop = asyncio.get_running_loop()
+    v = _loaded_voice(voice)
+    total_chunks = 0
+    total_bytes = 0
+    async for sentence in sentences:
+        s = sentence.strip()
+        if not s:
+            continue
 
-    def producer() -> None:
-        try:
-            for chunk in _sync_chunks(text, voice):
+        def synth(text: str) -> list[bytes]:
+            chunks = []
+            for chunk in v.synthesize(text):
                 data, _ = convert(chunk, fmt, rate)
-                loop.call_soon_threadsafe(queue.put_nowait, data)
-        except Exception as e:  # re-raised on the async side
-            loop.call_soon_threadsafe(queue.put_nowait, e)
-        finally:
-            loop.call_soon_threadsafe(queue.put_nowait, None)
+                chunks.append(data)
+            return chunks
 
-    threading.Thread(target=producer, daemon=True).start()
+        t_synth = time.perf_counter()
+        audio_chunks = await asyncio.to_thread(synth, s)
+        synth_ms = int((time.perf_counter() - t_synth) * 1000)
+        chunk_bytes = sum(len(c) for c in audio_chunks)
+        total_chunks += len(audio_chunks)
+        total_bytes += chunk_bytes
+        print(f"  [tts] synthesized {len(s)} chars in {synth_ms} ms -> {chunk_bytes / 1024:.1f} KB ({fmt})", flush=True)
 
-    while True:
-        item = await queue.get()
-        if item is None:
-            return
-        if isinstance(item, Exception):
-            raise item
-        yield item
+        for chunk in audio_chunks:
+            yield chunk
+
+
+async def stream_raw(
+    text: str, voice: str, fmt: str = "pcm16", rate: int | None = None
+) -> AsyncIterator[bytes]:
+    """Emits audio as Piper produces it for a single text string."""
+    async def _single() -> AsyncIterator[str]:
+        yield text
+
+    async for chunk in stream_raw_sentences(_single(), voice, fmt, rate):
+        yield chunk
 
 
 def sample_rate_of(voice: str, rate: int | None = None) -> int:
