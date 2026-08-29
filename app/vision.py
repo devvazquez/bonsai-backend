@@ -28,7 +28,7 @@ WARMUP_URL = "https://api.groq.com/openai/v1/models"
 
 # Check the current name at https://console.groq.com/docs/models — Groq renames
 # and retires models often.
-MODEL = os.environ.get("GROQ_VISION_MODEL", "qwen/qwen3.6-27b")
+MODEL = os.environ.get("GROQ_VISION_MODEL", "qwen/qwen3.8-27b")
 
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 
