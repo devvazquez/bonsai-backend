@@ -601,4 +601,10 @@ async def main_test():
     return 1 if failures else 0
 
 
-sys.exit(asyncio.run(main_test()))
+def test_api():
+    """The same run, for pytest: collecting this module no longer exits."""
+    assert asyncio.run(main_test()) == 0
+
+
+if __name__ == "__main__":
+    sys.exit(asyncio.run(main_test()))

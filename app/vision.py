@@ -274,6 +274,7 @@ async def describe_image_stream(
             buffer = ""
             in_think = False
             first_token = True
+            seen_sentences: set[str] = set()
 
             async for raw_line in resp.aiter_lines():
                 line = raw_line.strip()
@@ -348,7 +349,8 @@ async def describe_image_stream(
                         else:
                             continue
 
-                    # Sentence splitter
+                    # Sentence splitter. Inside the loop, so each sentence goes to TTS
+                    # the moment it is complete; exact repeats are dropped.
                     while True:
                         m = re.search(r'([.!?\n]+)\s+', buffer)
                         if m:
@@ -356,9 +358,12 @@ async def describe_image_stream(
                             sentence = buffer[:end_idx].strip()
                             buffer = buffer[end_idx:]
                             if sentence:
-                                s_ms = int((time.perf_counter() - t0) * 1000)
-                                print(f"  [vision] sentence at {s_ms} ms: {sentence!r}", flush=True)
-                                yield sentence
+                                # Suppress exact duplicates (anywhere in the stream)
+                                if sentence not in seen_sentences:
+                                    s_ms = int((time.perf_counter() - t0) * 1000)
+                                    print(f"  [vision] sentence at {s_ms} ms: {sentence!r}", flush=True)
+                                    yield sentence
+                                    seen_sentences.add(sentence)
                         else:
                             if len(buffer) > 80:
                                 m_comma = re.search(r'([,;:—])\s+', buffer)
@@ -367,18 +372,22 @@ async def describe_image_stream(
                                     sentence = buffer[:end_idx].strip()
                                     buffer = buffer[end_idx:]
                                     if sentence:
-                                        s_ms = int((time.perf_counter() - t0) * 1000)
-                                        print(f"  [vision] sentence clause at {s_ms} ms: {sentence!r}", flush=True)
-                                        yield sentence
-                                        continue
+                                        if sentence not in seen_sentences:
+                                            s_ms = int((time.perf_counter() - t0) * 1000)
+                                            print(f"  [vision] sentence clause at {s_ms} ms: {sentence!r}", flush=True)
+                                            yield sentence
+                                            seen_sentences.add(sentence)
+                                    # Consumed either way: keep splitting.
+                                    continue
                             break
 
             # Leftover buffer
             rem = buffer.strip()
-            if rem:
+            if rem and rem not in seen_sentences:
                 s_ms = int((time.perf_counter() - t0) * 1000)
                 print(f"  [vision] final sentence at {s_ms} ms: {rem!r}", flush=True)
                 yield rem
+                seen_sentences.add(rem)
 
             meta["vision_ms"] = int((time.perf_counter() - t0) * 1000)
             meta["text"] = "".join(full_text_list).strip()
