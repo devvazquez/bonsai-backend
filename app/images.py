@@ -24,6 +24,20 @@ ENABLED = MAX_SIDE > 0
 
 QUALITY = int(os.environ.get("IMAGE_JPEG_QUALITY", "80"))
 
+# The OV3660 frames come out soft and veiled: a lamp in shot lifts the blacks
+# into grey haze and the whole picture loses contrast. Stretching the levels and
+# a mild unsharp mask give the model back edges it can read, for a few tens of
+# ms at 800x600. IMAGE_ENHANCE=0 turns it off.
+ENHANCE = os.environ.get("IMAGE_ENHANCE", "1") != "0"
+
+
+def _enhance(im):
+    from PIL import ImageFilter, ImageOps
+    # Per channel, so it also pulls out part of the magenta cast. The 1% cutoff
+    # keeps a single blown lamp from deciding the white point.
+    im = ImageOps.autocontrast(im, cutoff=1)
+    return im.filter(ImageFilter.UnsharpMask(radius=2, percent=80, threshold=3))
+
 
 def resize(image_base64: str, max_side: int | None = None) -> tuple[str, dict]:
     """Returns (image_in_base64, info). Leaves it alone if there is nothing to do.
@@ -51,18 +65,22 @@ def resize(image_base64: str, max_side: int | None = None) -> tuple[str, dict]:
         im = ImageOps.exif_transpose(im)
         original = im.size
 
-        if max(original) <= side:
+        if max(original) <= side and not ENHANCE:
             info.update({"from": original, "reason": "already small"})
             return image_base64, info
 
         im = im.convert("RGB")
-        im.thumbnail((side, side))
+        if max(original) > side:
+            im.thumbnail((side, side))
+            info["resized"] = True
+        if ENHANCE:
+            im = _enhance(im)
+            info["enhanced"] = True
         buf = io.BytesIO()
         im.save(buf, "JPEG", quality=QUALITY, optimize=True)
         shrunk = buf.getvalue()
 
         info.update({
-            "resized": True,
             "from": original,
             "to": im.size,
             "bytesFrom": len(raw),

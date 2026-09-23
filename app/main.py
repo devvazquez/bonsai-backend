@@ -141,6 +141,31 @@ TOOLS_MAX_CHARS = int(os.environ.get("TOOLS_MAX_CHARS", "2000"))
 # round trip, which is exactly what this project refuses to pay.
 TOOL_ACK = {"ca": "Fet.", "es": "Hecho.", "en": "Done."}
 
+# The photo comes from a cheap fixed-focus 3 MP sensor (OV3660) at 800x600: it is
+# always soft, a bit noisy and sometimes hazy against a light. Without saying so
+# the model treats every frame as a failed photo and answers "I can't see
+# anything", which is the one answer the wearer can do nothing with.
+CAMERA_NOTE = {
+    "ca": "Sobre la càmera: les fotos surten d'una càmera petita de 3 MP amb focus "
+          "fix, així que sempre seran una mica borroses, amb soroll o amb reflexos. "
+          "És normal: no diguis mai que no hi veus o que la imatge és massa borrosa. "
+          "Descriu el que sí es distingeix (formes, colors, objectes, text gran) i, "
+          "si no n'estàs segur, digues-ho amb un «sembla». Només si realment no es "
+          "distingeix res, demana que s'acostin o que hi hagi més llum.",
+    "es": "Sobre la cámara: las fotos vienen de una cámara pequeña de 3 MP con foco "
+          "fijo, así que siempre saldrán algo borrosas, con ruido o con reflejos. Es "
+          "normal: nunca digas que no ves nada o que la imagen está demasiado borrosa. "
+          "Describe lo que sí se distingue (formas, colores, objetos, texto grande) y, "
+          "si no estás seguro, dilo con un «parece». Solo si de verdad no se distingue "
+          "nada, pide que se acerquen o que haya más luz.",
+    "en": "About the camera: photos come from a small fixed-focus 3 MP camera, so "
+          "they will always be somewhat soft, noisy or hazy. That is expected: never "
+          "say you cannot see or that the image is too blurry. Describe what can be "
+          "made out (shapes, colours, objects, large text) and hedge with \"looks "
+          "like\" when unsure. Only if nothing at all can be made out, ask them to get "
+          "closer or find more light.",
+}
+
 
 def _clean_tools(tools: list[dict] | None) -> list[dict]:
     """Validates what the device sent before it reaches the model."""
@@ -185,6 +210,7 @@ def build_system_prompt(lang: str, memory_context: str,
             "en un rètol o cartell de la imatge (i especifica que ho estàs llegint). "
             "Davant del dubte, descriu el lloc sense posar-li nom: «una plaça gran amb "
             "terrasses» és millor que un nom inventat.",
+            CAMERA_NOTE["ca"],
             "Exemples d'estil i to:\n"
             "- «Tens al davant un volant de simulador de conducció connectat a un ordinador, al costat d'un llit.»\n"
             "- «Compte amb el graó que hi ha a sota. A la dreta hi ha una ampolla d'aigua sobre la taula.»\n"
@@ -214,6 +240,7 @@ def build_system_prompt(lang: str, memory_context: str,
             "legible o posibles peligros.\n"
             "- Responde SIEMPRE en español claro y natural.",
             "No inventes nombres propios de lugares ni calles salvo que los leas en un cartel.",
+            CAMERA_NOTE["es"],
         ]
         if memory_context:
             parts.append("Cosas que la persona te ha pedido recordar:\n" + memory_context)
@@ -233,6 +260,7 @@ def build_system_prompt(lang: str, memory_context: str,
             "matters first and no filler. Do not start with «in the image there "
             "is». Readable text or anything dangerous comes first. ALWAYS answer in English.",
             "Never guess proper nouns (cities, streets, monuments) unless reading them on a sign.",
+            CAMERA_NOTE["en"],
         ]
         if memory_context:
             parts.append("Things the person has asked you to remember before:\n" + memory_context)
