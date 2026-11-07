@@ -33,7 +33,7 @@ VOICES_DIR = os.environ.get(
 # upc_ona-medium (this one), upc_ona-x_low and upc_pau-x_low (male, faster:
 # 145 ms vs 215, but 16 kHz and you can hear it).
 VOICES = {
-    "ca": "ca_ES-upc_ona-x_low",
+    "ca": "ca_ES-upc_ona-medium",
     "es": "es_ES-davefx-medium",
     "en": "en_GB-alba-medium",
 }
