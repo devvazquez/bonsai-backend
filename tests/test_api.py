@@ -176,7 +176,7 @@ async def main_test():
               r.headers["x-bonsai-format"] == "pcm16"
               and r.headers["x-bonsai-rate"] == "16000")
         check("reports the whisper model",
-              r.headers["x-bonsai-stt-model"] == "whisper-large-v3-turbo",
+              r.headers["x-bonsai-stt-model"] == "whisper-large-v3",
               r.headers.get("x-bonsai-stt-model", "-"))
         check("reports how much audio it was",
               r.headers["x-bonsai-audio-secs"] == "1.00",
@@ -197,7 +197,7 @@ async def main_test():
               and b"WAVEfmt" in stt_body[:600])
         check("with the real length, not 0xFFFFFFFF",
               struct.pack("<I", 32000) in stt_body[:600])
-        check("asks for whisper turbo", b"whisper-large-v3-turbo" in stt_body)
+        check("asks for whisper large v3", b"whisper-large-v3" in stt_body)
         check("tells it the language", b'name="language"' in stt_body
               and b"ca" in stt_body)
 

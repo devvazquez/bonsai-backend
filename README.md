@@ -20,7 +20,7 @@ flowchart LR
 
 Components del backend:
 
-- **STT**: **whisper-large-v3-turbo** a Groq, només per a `/ask`.
+- **STT**: **whisper-large-v3** a Groq, només per a `/ask`.
 - **Visió**: **qwen/qwen3.6-27b** a Groq. Model multimodal d'Alibaba que suporta imatges.
 - **TTS**: **Piper TTS** en local i rapid. Es clau per al suport de veus en català (ca-upc_ona).
 - **Memòria**: SQLite, un fitxer, sense serveis externs.
@@ -338,7 +338,7 @@ En català només hi ha tres veus al repositori de Piper; la comparativa és a
 | `ADMIN_PASSWORD` | buit | Contrasenya de `/admin`. Buida = la ruta ni existeix |
 | `IMAGE_MAX_SIDE` | `896` | Costat llarg al qual es redueix la foto. `0` ho desactiva |
 | `GROQ_VISION_MODEL` | `qwen/qwen3.6-27b` | Model de visió |
-| `GROQ_STT_MODEL` | `whisper-large-v3-turbo` | Model de transcripció de `/ask` |
+| `GROQ_STT_MODEL` | `whisper-large-v3` | Model de transcripció de `/ask` |
 | `ASK_MAX_AUDIO_SECONDS` | `30` | Topall de gravació de `/ask` |
 | `ASK_SILENCE_TIMEOUT_SECONDS` | `15` | Sense cap tros del micròfon en tant de temps, `408` |
 | `ASK_WAKE_PHRASE` / `ASK_WAKE_REPLY` | `Hey Bonsai!` / `Diga’m!` | Els dos torns donats per dits |

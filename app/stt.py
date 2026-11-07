@@ -1,9 +1,9 @@
-"""Speech transcription with Whisper turbo on Groq.
+"""Speech transcription with Whisper large v3 on Groq.
 
 First half of `/ask`: the glasses send what the wearer said and here it becomes
 the text question handed to the vision model.
 
-`whisper-large-v3-turbo` is used because on Groq's free tier it does **not**
+`whisper-large-v3` is used for transcription quality. It does **not**
 spend the text quota — audio limits are per transcribed second, not the
 200,000 tokens/day the photos eat. Testing `/ask` never breaks `/look`.
 
@@ -26,7 +26,7 @@ from .vision import VisionRateLimit, get_client
 GROQ_STT_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 
 # Check the current name at https://console.groq.com/docs/models
-MODEL = os.environ.get("GROQ_STT_MODEL", "whisper-large-v3-turbo")
+MODEL = os.environ.get("GROQ_STT_MODEL", "whisper-large-v3")
 
 TRANSCRIPTION_PROMPTS = {
     "ca": "Transcriu exactament en català. No tradueixis al castellà ni a cap altre idioma.",
