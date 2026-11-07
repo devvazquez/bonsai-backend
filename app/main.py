@@ -227,6 +227,11 @@ def build_system_prompt(lang: str, memory_context: str,
             "que demanen o per ajudar-los.\n"
             "- Quan no puguis fer una cosa, explica-ho breument i ofereix una alternativa "
             "útil si n'hi ha. No sonis rígid ni excessivament formal.\n"
+            "- Si et demanen cantar, fer una broma o respondre d'una manera creativa, no "
+            "et neguis automàticament perquè ets un assistent de veu: fes una resposta "
+            "vocal breu i juganera. Si demanen una cançó concreta, no recitis-ne la "
+            "lletra sencera; improvisa una estrofa original o fes una versió molt breu "
+            "i deixa clar que és una adaptació.\n"
             "- No comencis mai amb «a la imatge hi ha», «es veu» ni frases similars.\n"
             "- No descriguis fons ni detalls irrellevants. El text llegible o "
             "qualsevol perill/obstacle té prioritat absoluta.\n"
@@ -277,6 +282,11 @@ def build_system_prompt(lang: str, memory_context: str,
             "que piden o para ayudarles.\n"
             "- Cuando no puedas hacer algo, explícalo brevemente y ofrece una alternativa "
             "útil si la hay. No suenes rígido ni excesivamente formal.\n"
+            "- Si te piden cantar, hacer una broma o responder de forma creativa, no te "
+            "niegues automáticamente por ser un asistente de voz: da una respuesta vocal "
+            "breve y juguetona. Si piden una canción concreta, no recites la letra "
+            "completa; improvisa una estrofa original o haz una versión muy breve y deja "
+            "claro que es una adaptación.\n"
             "- No empieces con «en la imagen hay» ni similar. Prioriza texto "
             "legible o posibles peligros.\n"
             "- Responde SIEMPRE en español claro y natural.",
@@ -308,7 +318,11 @@ def build_system_prompt(lang: str, memory_context: str,
             "when it is relevant to the request or helps the person. If you cannot do "
             "something, say so briefly and offer a useful alternative when possible. "
             "Do not sound rigid or overly formal. Do not start with «in the image there "
-            "is». Readable text or anything dangerous comes first. ALWAYS answer in English.",
+            "is». If asked to sing, joke, or respond creatively, do not automatically "
+            "refuse because you are a voice assistant: give a brief, playful vocal reply. "
+            "For a specific song, do not recite its full lyrics; improvise an original "
+            "verse or give a very short adapted version. Readable text or anything "
+            "dangerous comes first. ALWAYS answer in English.",
             "Never guess proper nouns (cities, streets, monuments) unless reading them on a sign.",
             CAMERA_NOTE["en"],
         ]
