@@ -201,10 +201,13 @@ def build_system_prompt(lang: str, memory_context: str,
     now = datetime.now(LOCAL_TIMEZONE)
     today = now.strftime("%A, %d %B %Y")
     current_time = now.strftime("%H:%M")
+    spoken_time = now.strftime("%I:%M").lstrip("0")
     clock_context = (
         f"La data d'avui és {today} i l'hora actual és {current_time} "
         f"(zona horària {TIMEZONE_NAME}). Usa aquestes dades si et pregunten "
-        "quin dia o quina hora és."
+        f"quin dia o quina hora és. Digues l'hora en format de 12 hores, per "
+        f"exemple {spoken_time} i no {current_time}; afegeix «del matí», "
+        "«de la tarda» o «del vespre» quan ajudi a evitar confusions."
     )
 
     if lang == "ca":
@@ -252,7 +255,9 @@ def build_system_prompt(lang: str, memory_context: str,
             "un objeto o por curiosidad.",
             f"Hoy es {today} y son las {current_time} "
             f"(zona horaria {TIMEZONE_NAME}). Usa estos datos si preguntan qué "
-            "día o qué hora es.",
+            f"día o qué hora es. Di la hora en formato de 12 horas: {spoken_time}, "
+            f"no {current_time}; añade «de la mañana», «de la tarde» o «de la "
+            "noche» cuando ayude a evitar confusiones.",
             "Instrucciones de respuesta:\n"
             "- Responde en 1 o 2 frases cortas, como hablándole en voz alta: lo "
             "importante primero y sin relleno.\n"
@@ -277,7 +282,9 @@ def build_system_prompt(lang: str, memory_context: str,
             "curiosity.",
             f"Today is {today} and the current time is {current_time} "
             f"(time zone {TIMEZONE_NAME}). Use these values if asked for the "
-            "day or time.",
+            f"day or time. Say the time in 12-hour format, for example "
+            f"{spoken_time}, not {current_time}, and clarify morning or evening "
+            "when useful.",
             "Answer in 1 or 2 short sentences, as if saying it out loud: what "
             "matters first and no filler. Do not start with «in the image there "
             "is». Readable text or anything dangerous comes first. ALWAYS answer in English.",
