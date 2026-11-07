@@ -25,8 +25,9 @@ import base64
 import json
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -55,6 +56,16 @@ app = FastAPI(title="Bonsai Backend", version="2.0.0")
 # keep working until their firmware is updated.
 API_VERSION = "v1"
 API_PREFIX = f"/api/{API_VERSION}"
+
+# The device has no reliable wall clock, so the backend is the source of truth
+# for calendar and clock questions. Keep this configurable because the backend
+# may be deployed outside the user's local timezone.
+TIMEZONE_NAME = os.environ.get("BONSAI_TIMEZONE", "Europe/Madrid")
+try:
+    LOCAL_TIMEZONE = ZoneInfo(TIMEZONE_NAME)
+except ZoneInfoNotFoundError:
+    LOCAL_TIMEZONE = timezone.utc
+    TIMEZONE_NAME = "UTC"
 
 # Routes are declared here and mounted with the prefix at the end of the file.
 # There is no unprefixed alias: plain /look returns 404.
@@ -187,14 +198,21 @@ def _clean_tools(tools: list[dict] | None) -> list[dict]:
 def build_system_prompt(lang: str, memory_context: str,
                         tools: list[dict] | None = None) -> str:
     lang = (lang or "ca").lower()
-    today = datetime.now().strftime("%A, %d %B %Y")
+    now = datetime.now(LOCAL_TIMEZONE)
+    today = now.strftime("%A, %d %B %Y")
+    current_time = now.strftime("%H:%M")
+    clock_context = (
+        f"La data d'avui és {today} i l'hora actual és {current_time} "
+        f"(zona horària {TIMEZONE_NAME}). Usa aquestes dades si et pregunten "
+        "quin dia o quina hora és."
+    )
 
     if lang == "ca":
         parts = [
             "Ets l'assistent de visió de les ulleres Bonsai: expliques a qui les "
             "porta què té al davant, sigui per orientar-se, llegir alguna cosa, "
             "identificar un objecte o per simple curiositat.",
-            f"Avui és {today}.",
+            clock_context,
             "Instruccions de resposta:\n"
             "- Respon en 1 o 2 frases curtes, com si ho diguessis en veu alta: "
             "el més important primer i sense farciment.\n"
@@ -232,7 +250,9 @@ def build_system_prompt(lang: str, memory_context: str,
             "Eres el asistente visual de las gafas Bonsai: describes a quien las "
             "lleva qué tiene delante, sea para orientarse, leer algo, identificar "
             "un objeto o por curiosidad.",
-            f"Hoy es {today}.",
+            f"Hoy es {today} y son las {current_time} "
+            f"(zona horaria {TIMEZONE_NAME}). Usa estos datos si preguntan qué "
+            "día o qué hora es.",
             "Instrucciones de respuesta:\n"
             "- Responde en 1 o 2 frases cortas, como hablándole en voz alta: lo "
             "importante primero y sin relleno.\n"
@@ -255,7 +275,9 @@ def build_system_prompt(lang: str, memory_context: str,
             "is wearing them what is in front of them, whether to get their "
             "bearings, to read something, to identify an object or just out of "
             "curiosity.",
-            f"Today is {today}.",
+            f"Today is {today} and the current time is {current_time} "
+            f"(time zone {TIMEZONE_NAME}). Use these values if asked for the "
+            "day or time.",
             "Answer in 1 or 2 short sentences, as if saying it out loud: what "
             "matters first and no filler. Do not start with «in the image there "
             "is». Readable text or anything dangerous comes first. ALWAYS answer in English.",
