@@ -28,6 +28,12 @@ GROQ_STT_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 # Check the current name at https://console.groq.com/docs/models
 MODEL = os.environ.get("GROQ_STT_MODEL", "whisper-large-v3-turbo")
 
+TRANSCRIPTION_PROMPTS = {
+    "ca": "Transcriu exactament en català. No tradueixis al castellà ni a cap altre idioma.",
+    "es": "Transcribe exactamente en español. No traduzcas al catalán ni a ningún otro idioma.",
+    "en": "Transcribe exactly in English. Do not translate into another language.",
+}
+
 # Same error shape as groq_vision: "Please try again in 16.56s".
 _WAIT_RE = re.compile(r"try again in\s+(?:(\d+)m)?([\d.]+)s", re.IGNORECASE)
 
@@ -127,6 +133,10 @@ async def transcribe(
     # only thing that adds latency here. If unknown, better not to lie.
     if lang:
         data["language"] = lang
+        data["prompt"] = TRANSCRIPTION_PROMPTS.get(
+            lang.lower(),
+            "Transcribe exactly what is said. Do not translate or change the language.",
+        )
 
     resp = await get_client().post(
         GROQ_STT_URL,
